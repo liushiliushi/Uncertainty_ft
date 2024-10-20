@@ -123,6 +123,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
 
     # Start the training loop
     for epoch in range(train_config.num_epochs):
+        for param_group in optimizer.param_groups:
+            print(f"Current learning rate: {param_group['lr']}")
         # stop when the maximum number of training steps is reached
         if max_steps_reached:
             break
@@ -247,6 +249,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
 
         # Update the learning rate as needed
         lr_scheduler.step()
+
+
         if train_config.run_validation:
             eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
             if train_config.save_metrics:
@@ -393,17 +397,17 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
                         batch[key] = batch[key].to('xpu:0')
                     else:
                         batch[key] = batch[key].to('cuda:0')
-            conf_index = batch.data.pop('conf_index')
+            # conf_index = batch.data.pop('conf_index')
             y = batch.data.pop('y')
             # Ensure no gradients are computed for this scope to save memory
             with torch.no_grad():
                 # Forward pass and compute loss
                 outputs = model(**batch)
                 logits = outputs.logits
-                conf_index = conf_index.unsqueeze(-1).expand(-1, -1, logits.shape[2])
-                num_token = torch.gather(logits, 1, conf_index).squeeze(1)
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))
+                num_token = logits[:, -1, :]  # get the logit of the confidence token
+                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
                 num_conf = F.softmax(num_conf, dim=1)
+                # compute the loss
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to('cuda:0')
                 y_expanded = y.expand(logits.shape[0], 101)
                 squared_differences = (y_expanded - scores) ** 2
