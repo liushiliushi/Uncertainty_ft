@@ -26,16 +26,19 @@ def extract_answer(completion):
     else:
         return INVALID_ANS
 
-def get_object_cou(tokenizer, split):
+def get_object_cou(tokenizer, split, generate="vanilla"):
     if split == 'train':
-        path = '../dataset/ObjectCou/train.jsonl'
+        if generate == 'llm':
+            path = '../dataset/ObjectCou/train_neg.jsonl'
+        else:
+            path = '../dataset/ObjectCou/train.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
-        path = '../dataset/ObjectCou/test.jsonl'
+        if generate == 'llm':
+            path = '../dataset/ObjectCou/test_neg.jsonl'
+        else:
+            path = '../dataset/ObjectCou/test.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')
-    character = ["(A)", "(B)", "(C)", "(D)", "(E)", "(F)", "(G)", "(H)", "(I)", "(J)", "(K)", "(L)", "(M)", "(N)",
-                 "(O)", "(P)", "(Q)", "(R)", "(S)", "(T)", "(U)", "(V)", "(W)", "(X)", "(Y)", "(Z)"]
-
     def apply_prompt_template(qa):
 
         question = qa['input']
@@ -47,7 +50,10 @@ def get_object_cou(tokenizer, split):
     def apply_prompt_template_neg(qa):
         question = qa['input']
         pos_answer = qa['target'][1]
-        neg_answer = str(int(pos_answer) - 1)
+        if generate == "vanilla":
+            neg_answer = str(int(pos_answer) - 1)
+        else:
+            neg_answer = qa['neg_llm']
         return {
             "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {neg_answer}\nP: ",
             "y": 0,

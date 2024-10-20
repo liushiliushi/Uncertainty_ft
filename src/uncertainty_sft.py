@@ -4,7 +4,7 @@
 from collections import Counter
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import dataclasses
 import fire
 import random

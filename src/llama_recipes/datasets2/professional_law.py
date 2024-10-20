@@ -26,12 +26,18 @@ def extract_answer(completion):
     else:
         return INVALID_ANS
 
-def get_professional_law(tokenizer, split):
+def get_professional_law(tokenizer, split, generate="vanilla"):
     if split == 'train':
-        path = '../dataset/data/test/professional_law_test.csv'
+        if generate == 'llm':
+            path = '../dataset/data/test/professional_law_test_neg.csv'
+        else:
+            path = '../dataset/data/test/professional_law_test.csv'
         dataset = datasets.load_dataset('csv', data_files=path, split='train')
     else:
-        path = '../dataset/data/val/professional_law_val.csv'
+        if generate == 'llm':
+            path = '../dataset/data/val/professional_law_val_neg.csv'
+        else:
+            path = '../dataset/data/val/professional_law_val.csv'
         dataset = datasets.load_dataset('csv', data_files=path, split='train')
     character = ["(A)", "(B)", "(C)", "(D)", "(E)", "(F)", "(G)", "(H)", "(I)", "(J)", "(K)", "(L)", "(M)", "(N)",
                  "(O)", "(P)", "(Q)", "(R)", "(S)", "(T)", "(U)", "(V)", "(W)", "(X)", "(Y)", "(Z)"]
