@@ -55,7 +55,10 @@ def get_professional_law(tokenizer, split, generate="vanilla"):
         }
     def apply_prompt_template_neg(sample):
         raw_question = sample['0']
-        neg_answer = character[((ord(sample['5']) - ord("A")) - 1) % 4]
+        if generate == "vanilla":
+            neg_answer = character[((ord(sample['5']) - ord("A")) - 1) % 4]
+        else:
+            neg_answer = character[((ord(sample['6']) - ord("A"))) % 4]
         options = [sample[str(i)] for i in range(1, 5)]
         question = raw_question + '\n' + 'Options: '
         for i in range(4):
