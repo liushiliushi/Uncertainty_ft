@@ -216,7 +216,8 @@ def main(**kwargs):
     dataset_train = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
-        'train'
+        'train',
+        train_config.generate
     ).shuffle(seed=42)
     # dataset_train = dataset_train[:4]
     if not train_config.enable_fsdp or rank == 0:
@@ -225,7 +226,8 @@ def main(**kwargs):
     dataset_val = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
-        'test'
+        'test',
+        train_config.generate
     )
     if not train_config.enable_fsdp or rank == 0:
         print(f"--> Validation Set Length = {len(dataset_val)}")

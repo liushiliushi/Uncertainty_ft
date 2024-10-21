@@ -28,12 +28,12 @@ def get_preprocessed_dataset(
     )
 
 def get_preprocessed_dataset2(
-    tokenizer, dataset, split
+    tokenizer, dataset, split, generate
 ) -> torch.utils.data.Dataset:
 
 
     return DATASET_PREPROC[dataset](
-        tokenizer, split
+        tokenizer, split, generate
     )
 
 def get_dataloader(tokenizer, dataset_config, train_config, split: str = "train"):
