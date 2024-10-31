@@ -25,6 +25,7 @@ from llama_recipes.policies import fpSixteen,bfSixteen, get_llama_wrapper
 from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
+from llama_recipes.utils.compute_metrics import compute_conf_metrics
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
@@ -170,13 +171,21 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                     decoded_texts = [tokenizer.decode(indices[-1], skip_special_tokens=True) for indices in decoded_indices]
 
                     num_token = logits[:,-1,:] # get the logit of the confidence token
-                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                    num_conf = F.softmax(num_conf, dim=1)
-                    # compute the loss
                     scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to('cuda:0')
-                    y_expanded = y.expand(logits.shape[0], 101)
-                    squared_differences = (y_expanded - scores) ** 2
-                    loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+
+                    if train_config.loss_type == 'brier':
+                        num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                        num_conf = F.softmax(num_conf, dim=1)
+                        # compute the loss
+                        y_expanded = y.expand(logits.shape[0], 101)
+                        squared_differences = (y_expanded - scores) ** 2
+                        loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                    elif train_config.loss_type == 'sot':
+                        norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                        smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                        smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                        loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
+
                     print(f"\nlabel: {y[0].item()}  {y[1].item()}  {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
                     print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
                     print(f"loss: {loss}")
@@ -367,7 +376,8 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
     model.eval()
-    eval_preds = []
+    all_y = []
+    eval_probs = []
     val_step_loss = []
     val_step_perplexity = []
     eval_loss = 0.0  # Initialize evaluation loss
@@ -405,13 +415,20 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
                 outputs = model(**batch)
                 logits = outputs.logits
                 num_token = logits[:, -1, :]  # get the logit of the confidence token
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
-                # compute the loss
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to('cuda:0')
-                y_expanded = y.expand(logits.shape[0], 101)
-                squared_differences = (y_expanded - scores) ** 2
-                loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(logits.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
 
                 if train_config.save_metrics:
                     val_step_loss.append(loss.detach().float().item())
@@ -419,10 +436,14 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
 
                 eval_loss += loss.detach().float()
             # Decode predictions and add to evaluation predictions list
-            preds = torch.argmax(outputs.logits, -1)
-            eval_preds.extend(
-                tokenizer.batch_decode(preds.detach().cpu().numpy(), skip_special_tokens=True)
-            )
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            eval_probs.extend(probs.detach().cpu().numpy().tolist())
+            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    val_metrics = compute_conf_metrics(all_y, eval_probs)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
 
     # If there's more than one CUDA device, reduce evaluation loss across all devices
     if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
@@ -447,10 +468,11 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
         wandb_run.log({
                         'eval/perplexity': eval_ppl,
                         'eval/loss': eval_epoch_loss,
+                        'eval/ece': ece_score,
+                        'eval/roc_auc': roc_auc_score,
                     }, commit=False)
 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
-
 
 
 def freeze_transformer_layers(model, num_layer):

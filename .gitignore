@@ -3,3 +3,8 @@ __pycache__
 .ipynb_checkpoints
 wandb/
 artifacts/
+launch.json
+settings.json
+*safetensors*
+*src/checkpoints/*
+Meta-Llama*
