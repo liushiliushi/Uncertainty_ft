@@ -26,7 +26,7 @@ def extract_answer(completion):
     else:
         return INVALID_ANS
 
-def get_gsm8k_dataset(tokenizer, split):
+def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = '../dataset/grade_school_math/data/train.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')

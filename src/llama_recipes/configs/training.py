@@ -49,3 +49,4 @@ class train_config:
     use_profiler: bool = False # Enable pytorch profiler, can not be used with flop counter at the same time.
     profiler_dir: str = "PATH/to/save/profiler/results" # will be used if using profiler
     generate: str = "vanilla"
+    loss_type: str = 'brier' # 'brier' or 'sot'
