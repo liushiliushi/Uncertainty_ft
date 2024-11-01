@@ -8,3 +8,7 @@ settings.json
 *safetensors*
 *src/checkpoints/*
 Meta-Llama*
+dataset.zip
+dataset/data.tar
+dataset/data/auxiliary_train/race.csv
+dataset/*
