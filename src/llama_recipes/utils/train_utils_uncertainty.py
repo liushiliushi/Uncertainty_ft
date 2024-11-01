@@ -120,7 +120,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to('cuda:0')
+    num_indices = torch.tensor(token_ids).to(model.device)
 
     # Start the training loop
     for epoch in range(train_config.num_epochs):
@@ -157,7 +157,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             if is_xpu_available():
                                 batch[key] = batch[key].to('xpu:0')
                             else:
-                                batch[key] = batch[key].to('cuda:0')
+                                batch[key] = batch[key].to(model.device)
 
                     y = batch.data.pop('y')
                     with autocast():
@@ -388,7 +388,7 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
          2983, 3391, 2096, 1774, 2790, 2618, 2166, 2491, 1135, 3971, 4103, 4331, 4370, 2131, 3487, 3226, 2970, 2946,
          1399, 5547, 5538, 5495, 1227, 2397, 2287, 3080, 2614, 3076, 2031, 6028, 5332, 5958, 5728, 2075, 4767, 2813,
          2495, 4643, 1490, 5932, 6086, 6069, 5833, 5313, 4218, 4044, 2421, 4578, 1954, 5925, 6083, 6365, 6281, 2721,
-         4161, 3534, 3264, 1484, 1041]).to('cuda:0')
+         4161, 3534, 3264, 1484, 1041]).to(model.device)
 
     with MemoryTrace() as memtrace:
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
@@ -406,7 +406,7 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
                     if is_xpu_available():
                         batch[key] = batch[key].to('xpu:0')
                     else:
-                        batch[key] = batch[key].to('cuda:0')
+                        batch[key] = batch[key].to(model.device)
             # conf_index = batch.data.pop('conf_index')
             y = batch.data.pop('y')
             # Ensure no gradients are computed for this scope to save memory

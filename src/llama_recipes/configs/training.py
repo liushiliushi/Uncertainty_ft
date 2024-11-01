@@ -8,7 +8,7 @@ from dataclasses import dataclass
 class train_config:
     model_name: str="PATH/to/Model"
     tokenizer_name: str=None
-    enable_fsdp: bool=False # shards model parameters, optimizer states and gradients across DDP ranks
+    enable_fsdp: bool=True # shards model parameters, optimizer states and gradients across DDP ranks
     low_cpu_fsdp: bool=False # saves cpu memory by loading pretrained model on rank0 only
     run_validation: bool=True
     batch_size_training: int=8

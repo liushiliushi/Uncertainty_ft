@@ -1,0 +1,200 @@
+{"input": "I have a toaster, a table, a couch, a lamp, and a microwave. How many objects do I have?", "target": ["five", "5"], "neg_llm": "6"}
+{"input": "I have a microwave, a car, an oven, a table, a stove, and a lamp. How many objects do I have?", "target": ["six", "6"], "neg_llm": "7"}
+{"input": "I have a trumpet, a drum, a flute, a trombone, a violin, a clarinet, and two accordions. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a peach, an accordion, a nectarine, a flute, a raspberry, an apple, four grapes, a plum, a strawberry, a banana, and two oranges. How many fruits do I have?", "target": ["thirteen", "13"], "neg_llm": "11"}
+{"input": "I have two cars, a fridge, a microwave, and an oven. How many objects do I have?", "target": ["five", "5"], "neg_llm": "7"}
+{"input": "I have three strawberries, an orange, a blackberry, an apple, two peaches, four plums, a raspberry, a nectarine, five grapes, and a banana. How many fruits do I have?", "target": ["twenty", "20"], "neg_llm": "17"}
+{"input": "I have a piano, three clarinets, a drum, and four accordions. How many musical instruments do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have two frogs, a goat, a rabbit, a mouse, a snake, two donkeys, a bear, a cow, and a fish. How many animals do I have?", "target": ["eleven", "11"], "neg_llm": "12"}
+{"input": "I have a microwave, two onions, three carrots, a fridge, a bed, a cauliflower, and five potatoes. How many vegetables do I have?", "target": ["eleven", "11"], "neg_llm": "3"}
+{"input": "I have a snake, a mouse, a snail, a donkey, and a rabbit. How many animals do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a chair, a car, two fridges, a lamp, a table, four couches, a bed, and an oven. How many objects do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have four fish, two pigs, an apple, a snail, a rabbit, and a cow. How many animals do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have an onion, three rabbits, a pig, a donkey, two snails, and a duck. How many animals do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a blackberry, a plum, five bananas, a strawberry, an apple, and a grape. How many fruits do I have?", "target": ["ten", "10"], "neg_llm": "7"}
+{"input": "I have two stoves, an oven, three beds, a car, a table, a microwave, a chair, and three couches. How many objects do I have?", "target": ["thirteen", "13"], "neg_llm": "11"}
+{"input": "I have a flute, and two trumpets. How many musical instruments do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a couch, a bed, a table, and a stove. How many objects do I have?", "target": ["four", "4"], "neg_llm": "5"}
+{"input": "I have a blackberry, four nectarines, two raspberries, and an orange. How many fruits do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a yam, a stalk of celery, an onion, three carrots, two lettuce heads, a cabbage, a garlic, a potato, a head of broccoli, and two cauliflowers. How many vegetables do I have?", "target": ["fourteen", "14"], "neg_llm": "7"}
+{"input": "I have a cauliflower, a stove, a garlic, three onions, two tables, a stalk of celery, four potatoes, a lettuce head, three carrots, a cabbage, a yam, and three cars. How many vegetables do I have?", "target": ["sixteen", "16"], "neg_llm": "7"}
+{"input": "I have a clarinet, an accordion, a chicken, a drum, a trumpet, and a trombone. How many musical instruments do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a cabbage, a garlic, a yam, a cauliflower, a head of broccoli, and a lettuce head. How many vegetables do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a stalk of celery, two cauliflowers, a head of broccoli, a carrot, a cabbage, a lettuce head, and three onions. How many vegetables do I have?", "target": ["ten", "10"], "neg_llm": "7"}
+{"input": "I have an orange, a plum, a grape, a peach, a raspberry, a banana, and a strawberry. How many fruits do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have three chairs, and a car. How many objects do I have?", "target": ["four", "4"], "neg_llm": "4"}
+{"input": "I have a rabbit, a mouse, a donkey, a snail, a bear, three goats, and a clarinet. How many animals do I have?", "target": ["eight", "8"], "neg_llm": "6"}
+{"input": "I have a strawberry, an orange, a peach, a raspberry, a blackberry, a nectarine, a grape, an apple, and two plums. How many fruits do I have?", "target": ["ten", "10"], "neg_llm": "9"}
+{"input": "I have a chair, a car, an oven, a bed, and a lamp. How many objects do I have?", "target": ["five", "5"], "neg_llm": "6"}
+{"input": "I have a snail, three fish, a mouse, a chicken, two pigs, a frog, a donkey, and a cow. How many animals do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have a chair, a car, a bed, a toaster, two ovens, a microwave, a table, a couch, and a stove. How many objects do I have?", "target": ["ten", "10"], "neg_llm": "9"}
+{"input": "I have a lamp, a toaster, a fridge, a chair, and a bed. How many objects do I have?", "target": ["five", "5"], "neg_llm": "6"}
+{"input": "I have a cow, four clarinets, a snail, a bear, a cat, a piano, and a snake. How many animals do I have?", "target": ["five", "5"], "neg_llm": "3"}
+{"input": "I have a clarinet, a trumpet, a trombone, and a violin. How many musical instruments do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a rabbit, a dog, a snake, and a pig. How many animals do I have?", "target": ["four", "4"], "neg_llm": "5"}
+{"input": "I have a duck, two stalks of celery, a mouse, three cauliflowers, a dog, a cat, a pig, four bears, a fish, a donkey, a yam, a snail, and four goats. How many animals do I have?", "target": ["sixteen", "16"], "neg_llm": "12"}
+{"input": "I have a drum, an accordion, a piano, a trumpet, a violin, two flutes, a clarinet, and a lamp. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have two stoves, a bed, a table, a microwave, a lamp, three fridges, and two chairs. How many objects do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have a clarinet, a trombone, and a piano. How many musical instruments do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have a snake, a rabbit, a frog, a chicken, a donkey, a cat, a goat, a snail, and a duck. How many animals do I have?", "target": ["nine", "9"], "neg_llm": "10"}
+{"input": "I have five goats, two rabbits, a snail, a bear, a dog, a cat, a frog, a snake, two ducks, and a donkey. How many animals do I have?", "target": ["sixteen", "16"], "neg_llm": "15"}
+{"input": "I have a cat, a snake, a rabbit, a pig, a dog, a donkey, a bear, a chicken, and a cow. How many animals do I have?", "target": ["nine", "9"], "neg_llm": "11"}
+{"input": "I have a bear, a mouse, two donkeys, a rabbit, a fridge, three fish, and four snakes. How many animals do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have a cauliflower, a yam, a stalk of celery, a carrot, three cabbages, three garlics, a head of broccoli, a potato, a lettuce head, and an onion. How many vegetables do I have?", "target": ["fourteen", "14"], "neg_llm": "7"}
+{"input": "I have an oven, a couch, a bed, five stoves, a lamp, and two toasters. How many objects do I have?", "target": ["eleven", "11"], "neg_llm": "8"}
+{"input": "I have a carrot, a head of broccoli, a stalk of celery, a yam, an onion, and a cauliflower. How many vegetables do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a yam, a trumpet, a lettuce head, four onions, a violin, a cauliflower, and a piano. How many vegetables do I have?", "target": ["seven", "7"], "neg_llm": "2"}
+{"input": "I have a bed, a lamp, two microwaves, a fridge, two toasters, a stove, a table, a car, and three ovens. How many objects do I have?", "target": ["thirteen", "13"], "neg_llm": "9"}
+{"input": "I have a flute, a drum, two trombones, a violin, a piano, an accordion, and a trumpet. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have an accordion, two drums, and a trumpet. How many musical instruments do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a head of broccoli, a drum, and a cauliflower. How many vegetables do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have two garlics, a carrot, and a cauliflower. How many vegetables do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have three bananas, a raspberry, a strawberry, a grape, and a plum. How many fruits do I have?", "target": ["seven", "7"], "neg_llm": "5"}
+{"input": "I have two beds, a car, a microwave, and three tables. How many objects do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have an oven, and a toaster. How many objects do I have?", "target": ["two", "2"], "neg_llm": "1"}
+{"input": "I have a donkey, a cat, a trombone, a dog, a goat, a flute, a chicken, and a snail. How many animals do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a bed, a fridge, a car, a chair, a toaster, a couch, and a table. How many objects do I have?", "target": ["seven", "7"], "neg_llm": "9"}
+{"input": "I have a cabbage, four yams, a cauliflower, a carrot, and a lettuce head. How many vegetables do I have?", "target": ["eight", "8"], "neg_llm": "5"}
+{"input": "I have a donkey, a rabbit, a cow, and a goat. How many animals do I have?", "target": ["four", "4"], "neg_llm": "5"}
+{"input": "I have a trombone, a trumpet, a clarinet, a piano, a chair, a drum, an accordion, an oven, a violin, two flutes, and a microwave. How many musical instruments do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have a snail, a bear, a dog, and a chicken. How many animals do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a chair, and a bed. How many objects do I have?", "target": ["two", "2"], "neg_llm": "1"}
+{"input": "I have a head of broccoli, a potato, a garlic, four cauliflowers, and a yam. How many vegetables do I have?", "target": ["eight", "8"], "neg_llm": "5"}
+{"input": "I have a microwave, a chair, a lamp, a toaster, two ovens, a table, a bed, two stoves, and a fridge. How many objects do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have an oven, a chair, two beds, a stove, and a car. How many objects do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have an oven, three fridges, a chair, two lamps, a toaster, and four microwaves. How many objects do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have a rabbit, and a chicken. How many animals do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a snail, two chickens, a bear, and a snake. How many animals do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a flute, and a violin. How many musical instruments do I have?", "target": ["two", "2"], "neg_llm": "1"}
+{"input": "I have a table, three fridges, a chair, a stove, a toaster, two lamps, an oven, a bed, a microwave, and a couch. How many objects do I have?", "target": ["thirteen", "13"], "neg_llm": "11"}
+{"input": "I have two drums, a carrot, a clarinet, a flute, a trumpet, five trombones, four accordions, a piano, and a violin. How many musical instruments do I have?", "target": ["sixteen", "16"], "neg_llm": "11"}
+{"input": "I have two onions, and a stalk of celery. How many vegetables do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a violin, and a flute. How many musical instruments do I have?", "target": ["two", "2"], "neg_llm": "2"}
+{"input": "I have a carrot, a potato, a cabbage, two yams, a garlic, and a cauliflower. How many vegetables do I have?", "target": ["seven", "7"], "neg_llm": "5"}
+{"input": "I have a raspberry, a banana, a blackberry, an orange, a plum, and a strawberry. How many fruits do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have an accordion, a trombone, a flute, and a drum. How many musical instruments do I have?", "target": ["four", "4"], "neg_llm": "5"}
+{"input": "I have a microwave, a car, a fridge, a chair, and a lamp. How many objects do I have?", "target": ["five", "5"], "neg_llm": "6"}
+{"input": "I have an apple, and three oranges. How many fruits do I have?", "target": ["four", "4"], "neg_llm": "4"}
+{"input": "I have a toaster, a chair, two microwaves, a car, an oven, a stove, a lamp, and a fridge. How many objects do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have two snails, a goat, a dog, a pig, a cat, two donkeys, a rabbit, a cow, and a duck. How many animals do I have?", "target": ["eleven", "11"], "neg_llm": "12"}
+{"input": "I have a peach, a banana, an apple, a blackberry, and three raspberries. How many fruits do I have?", "target": ["seven", "7"], "neg_llm": "5"}
+{"input": "I have an orange, a banana, a plum, a grape, and a blackberry. How many fruits do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a donkey, a snake, a dog, and a fish. How many animals do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a violin, two trombones, a drum, two clarinets, an accordion, three flutes, and a trumpet. How many musical instruments do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have a stalk of celery, two lettuce heads, a yam, a carrot, a cauliflower, three cabbages, a garlic, an onion, a head of broccoli, and a potato. How many vegetables do I have?", "target": ["thirteen", "13"], "neg_llm": "7"}
+{"input": "I have a piano, a violin, an accordion, a fridge, two clarinets, a flute, a trumpet, a trombone, a drum, and an oven. How many musical instruments do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have two nectarines, a banana, a grape, a plum, four apples, a peach, a strawberry, and an orange. How many fruits do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have three oranges, a peach, a banana, a grape, a blackberry, and an apple. How many fruits do I have?", "target": ["eight", "8"], "neg_llm": "6"}
+{"input": "I have three beds, a car, a microwave, a fridge, a chair, two lamps, a toaster, an oven, a stove, and five couches. How many objects do I have?", "target": ["seventeen", "17"], "neg_llm": "14"}
+{"input": "I have a toaster, a table, a chair, a bed, two microwaves, and a lamp. How many objects do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have four nectarines, a banana, and a peach. How many fruits do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a grape, a plum, an orange, a raspberry, a blackberry, a strawberry, a peach, and four apples. How many fruits do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have a donkey, a dog, a mouse, a frog, a pig, a fish, two chickens, a cat, a rabbit, and a goat. How many animals do I have?", "target": ["eleven", "11"], "neg_llm": "10"}
+{"input": "I have a chair, and a microwave. How many objects do I have?", "target": ["two", "2"], "neg_llm": "1"}
+{"input": "I have four plums, an orange, a blackberry, a peach, a nectarine, three apples, a grape, four bananas, a strawberry, and a raspberry. How many fruits do I have?", "target": ["eighteen", "18"], "neg_llm": "15"}
+{"input": "I have two blackberries, a strawberry, a nectarine, a grape, an apple, a plum, four peaches, a raspberry, two bananas, two oranges, a chair, and a car. How many fruits do I have?", "target": ["sixteen", "16"], "neg_llm": "12"}
+{"input": "I have two mice, a rabbit, two donkeys, a bear, a dog, a snake, a chicken, and a cat. How many animals do I have?", "target": ["ten", "10"], "neg_llm": "9"}
+{"input": "I have a violin, a piano, an accordion, a clarinet, an apple, a trumpet, and a banana. How many musical instruments do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a trombone, a piano, a violin, a drum, a trumpet, a clarinet, a flute, and an accordion. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a lamp, and a fridge. How many objects do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a cow, a bear, five frogs, a goat, a rabbit, two fish, and a donkey. How many animals do I have?", "target": ["twelve", "12"], "neg_llm": "11"}
+{"input": "I have a frog, a dog, two rabbits, a duck, and a fish. How many animals do I have?", "target": ["six", "6"], "neg_llm": "7"}
+{"input": "I have a stalk of celery, and a potato. How many vegetables do I have?", "target": ["two", "2"], "neg_llm": "1"}
+{"input": "I have a table, a bed, a couch, two cars, a lamp, and three fridges. How many objects do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have a stalk of celery, a carrot, a cabbage, a lettuce head, a garlic, an onion, a cauliflower, and a head of broccoli. How many vegetables do I have?", "target": ["eight", "8"], "neg_llm": "5"}
+{"input": "I have a garlic, and a stalk of celery. How many vegetables do I have?", "target": ["two", "2"], "neg_llm": "2"}
+{"input": "I have a rabbit, a bear, a fish, a dog, a goat, a cat, three snails, and a cow. How many animals do I have?", "target": ["ten", "10"], "neg_llm": "9"}
+{"input": "I have a bed, a microwave, a stove, two tables, and a car. How many objects do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a yam, a head of broccoli, a cauliflower, a cabbage, and three garlics. How many vegetables do I have?", "target": ["seven", "7"], "neg_llm": "4"}
+{"input": "I have a pig, two ducks, and a dog. How many animals do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a banana, an apple, an orange, and a plum. How many fruits do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a garlic, a potato, a banana, a carrot, a raspberry, a strawberry, and two heads of broccoli. How many vegetables do I have?", "target": ["five", "5"], "neg_llm": "3"}
+{"input": "I have a lettuce head, three carrots, a yam, a cabbage, and a garlic. How many vegetables do I have?", "target": ["seven", "7"], "neg_llm": "4"}
+{"input": "I have a plum, an apple, two bananas, an orange, a grape, two strawberries, a raspberry, a nectarine, and three blackberries. How many fruits do I have?", "target": ["thirteen", "13"], "neg_llm": "11"}
+{"input": "I have a stove, a couch, a fridge, two cars, a lamp, a chair, and an oven. How many objects do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a bear, a snail, and two cows. How many animals do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a mouse, and a goat. How many animals do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a raspberry, a blackberry, a strawberry, three plums, a banana, and an apple. How many fruits do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a stove, a toaster, an orange, a plum, a strawberry, an apple, a raspberry, four nectarines, a banana, a peach, a microwave, and a grape. How many fruits do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have two stoves, and a car. How many objects do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have a flute, three clarinets, a trombone, two accordions, a violin, a drum, a trumpet, and two pianos. How many musical instruments do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have a car, a lamp, a stove, three chairs, a couch, a toaster, and two tables. How many objects do I have?", "target": ["ten", "10"], "neg_llm": "9"}
+{"input": "I have a carrot, a yam, and a lettuce head. How many vegetables do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a raspberry, a blackberry, three nectarines, a banana, two clarinets, a peach, a plum, a strawberry, a violin, a grape, a trumpet, and an orange. How many fruits do I have?", "target": ["eleven", "11"], "neg_llm": "8"}
+{"input": "I have an oven, three lamps, a bed, and a stove. How many objects do I have?", "target": ["six", "6"], "neg_llm": "4"}
+{"input": "I have a cat, a donkey, four snakes, a bear, a clarinet, a flute, a trombone, a pig, a snail, and a chicken. How many animals do I have?", "target": ["ten", "10"], "neg_llm": "8"}
+{"input": "I have a violin, a clarinet, a chicken, a bear, and two frogs. How many animals do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have two grapes, and a blackberry. How many fruits do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a cat, a frog, a bear, three chickens, three rabbits, a goat, a cow, three snakes, a dog, and a snail. How many animals do I have?", "target": ["sixteen", "16"], "neg_llm": "15"}
+{"input": "I have a chair, a table, and a fridge. How many objects do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have a trombone, a trumpet, a flute, a piano, an accordion, a drum, and a clarinet. How many musical instruments do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have a table, a microwave, a fridge, three chairs, and a lamp. How many objects do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have two garlics, a lettuce head, a carrot, three onions, four potatoes, two stalks of celery, a yam, a cauliflower, and two heads of broccoli. How many vegetables do I have?", "target": ["seventeen", "17"], "neg_llm": "9"}
+{"input": "I have a garlic, a head of broccoli, a cauliflower, a carrot, a potato, two onions, a cabbage, and a yam. How many vegetables do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have a strawberry, a peach, a blackberry, an orange, a grape, and an apple. How many fruits do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a car, a toaster, four tables, a microwave, two lamps, a chair, a fridge, a couch, and two stoves. How many objects do I have?", "target": ["fourteen", "14"], "neg_llm": "12"}
+{"input": "I have a blackberry, a grape, an orange, a strawberry, four apples, and a plum. How many fruits do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have two raspberries, a rabbit, a plum, an orange, a grape, a strawberry, a donkey, a nectarine, five blackberries, a peach, and a snail. How many fruits do I have?", "target": ["thirteen", "13"], "neg_llm": "9"}
+{"input": "I have a yam, a cauliflower, and a stalk of celery. How many vegetables do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a flute, a trombone, a piano, a clarinet, a violin, and a drum. How many musical instruments do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a donkey, and a snail. How many animals do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a plum, three oranges, three ducks, an apple, two raspberries, a grape, a nectarine, and a strawberry. How many fruits do I have?", "target": ["ten", "10"], "neg_llm": "7"}
+{"input": "I have a trumpet, two violins, a trombone, a flute, and a drum. How many musical instruments do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a bear, four stalks of celery, four yams, a snake, a lettuce head, and a snail. How many vegetables do I have?", "target": ["nine", "9"], "neg_llm": "3"}
+{"input": "I have a stove, a chair, four beds, a lamp, and a fridge. How many objects do I have?", "target": ["eight", "8"], "neg_llm": "6"}
+{"input": "I have a garlic, a stalk of celery, a cauliflower, three carrots, and two onions. How many vegetables do I have?", "target": ["eight", "8"], "neg_llm": "5"}
+{"input": "I have a mouse, two ducks, and a cauliflower. How many animals do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a plum, a blackberry, and a raspberry. How many fruits do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have an onion, a stalk of celery, a yam, three garlics, a carrot, five cabbages, and a head of broccoli. How many vegetables do I have?", "target": ["thirteen", "13"], "neg_llm": "7"}
+{"input": "I have two apples, a blackberry, four plums, a nectarine, three grapes, and a raspberry. How many fruits do I have?", "target": ["twelve", "12"], "neg_llm": "10"}
+{"input": "I have three heads of broccoli, and a cabbage. How many vegetables do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a stove, a microwave, a car, a couch, an oven, a lamp, a chair, and a table. How many objects do I have?", "target": ["eight", "8"], "neg_llm": "9"}
+{"input": "I have a trombone, a trumpet, an accordion, a plum, a flute, a drum, a clarinet, an orange, a violin, and a piano. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "6"}
+{"input": "I have a head of broccoli, a table, a chair, a fridge, two carrots, and a potato. How many vegetables do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a yam, a lettuce head, a stalk of celery, four cabbages, four carrots, and an onion. How many vegetables do I have?", "target": ["twelve", "12"], "neg_llm": "6"}
+{"input": "I have a violin, a fridge, a piano, a drum, three couches, an oven, a flute, and a trombone. How many musical instruments do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a cabbage, a cauliflower, two potatoes, a lettuce head, four heads of broccoli, a garlic, a carrot, a stalk of celery, and a yam. How many vegetables do I have?", "target": ["thirteen", "13"], "neg_llm": "9"}
+{"input": "I have a head of broccoli, a yam, a carrot, a cauliflower, an onion, and three lettuce heads. How many vegetables do I have?", "target": ["eight", "8"], "neg_llm": "6"}
+{"input": "I have a potato, a head of broccoli, three onions, a cabbage, two cauliflowers, and a garlic. How many vegetables do I have?", "target": ["nine", "9"], "neg_llm": "6"}
+{"input": "I have two plums, a blackberry, a nectarine, a peach, an apple, a raspberry, a grape, and a strawberry. How many fruits do I have?", "target": ["nine", "9"], "neg_llm": "8"}
+{"input": "I have an orange, three bananas, and a raspberry. How many fruits do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a cauliflower, and two heads of broccoli. How many vegetables do I have?", "target": ["three", "3"], "neg_llm": "2"}
+{"input": "I have a fish, a bear, two frogs, five lamps, five cars, four donkeys, a duck, a snail, a dog, and a pig. How many animals do I have?", "target": ["twelve", "12"], "neg_llm": "11"}
+{"input": "I have two cows, a dog, a bear, three fish, a mouse, a cat, a frog, two donkeys, a goat, and a duck. How many animals do I have?", "target": ["fourteen", "14"], "neg_llm": "13"}
+{"input": "I have a nectarine, five bananas, a grape, a strawberry, a peach, an orange, a blackberry, and a plum. How many fruits do I have?", "target": ["twelve", "12"], "neg_llm": "8"}
+{"input": "I have a carrot, a cauliflower, a yam, a lettuce head, an onion, three heads of broccoli, and a potato. How many vegetables do I have?", "target": ["nine", "9"], "neg_llm": "6"}
+{"input": "I have a grape, a blackberry, a plum, an apple, a nectarine, and a banana. How many fruits do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have a nectarine, and a raspberry. How many fruits do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have two ovens, a toaster, a table, a microwave, a fridge, a lamp, a bed, and a car. How many objects do I have?", "target": ["nine", "9"], "neg_llm": "7"}
+{"input": "I have a bear, a dog, a rabbit, a piano, four snails, a mouse, a donkey, a pig, and a frog. How many animals do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have two cauliflowers, three cabbages, a lettuce head, and a head of broccoli. How many vegetables do I have?", "target": ["seven", "7"], "neg_llm": "6"}
+{"input": "I have a rabbit, three cows, a donkey, three snakes, a duck, a dog, a pig, a chicken, a mouse, and a bear. How many animals do I have?", "target": ["fourteen", "14"], "neg_llm": "13"}
+{"input": "I have a cat, and a goat. How many animals do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a banana, a nectarine, four apples, a plum, a blackberry, a strawberry, a grape, a peach, and a raspberry. How many fruits do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have a lamp, and an oven. How many objects do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have two raspberries, a banana, and a peach. How many fruits do I have?", "target": ["four", "4"], "neg_llm": "3"}
+{"input": "I have a stalk of celery, three carrots, an onion, three yams, and a head of broccoli. How many vegetables do I have?", "target": ["nine", "9"], "neg_llm": "5"}
+{"input": "I have a flute, an accordion, a trombone, and two drums. How many musical instruments do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a cabbage, four stalks of celery, a potato, two heads of broccoli, a yam, a lettuce head, a carrot, a garlic, and a cauliflower. How many vegetables do I have?", "target": ["thirteen", "13"], "neg_llm": "7"}
+{"input": "I have a drum, a piano, a clarinet, a violin, an accordion, a trombone, and two flutes. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have an apple, three oranges, a grape, a blackberry, a plum, a raspberry, two strawberries, and a lettuce head. How many fruits do I have?", "target": ["ten", "10"], "neg_llm": "8"}
+{"input": "I have a bear, a dog, and a donkey. How many animals do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have three flutes, a drum, a piano, two clarinets, an accordion, two trombones, and a trumpet. How many musical instruments do I have?", "target": ["eleven", "11"], "neg_llm": "9"}
+{"input": "I have a clarinet, a cat, four trombones, a drum, a violin, two pianos, two flutes, two goats, an accordion, and two trumpets. How many musical instruments do I have?", "target": ["fourteen", "14"], "neg_llm": "10"}
+{"input": "I have a bed, and a chair. How many objects do I have?", "target": ["two", "2"], "neg_llm": "3"}
+{"input": "I have a cat, an orange, a duck, and three cows. How many animals do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a piano, two clarinets, a trombone, a trumpet, and a drum. How many musical instruments do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have three stoves, and a couch. How many objects do I have?", "target": ["four", "4"], "neg_llm": "4"}
+{"input": "I have a garlic, a stalk of celery, a cabbage, a lettuce head, and a carrot. How many vegetables do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have a drum, two accordions, three flutes, a potato, a clarinet, a trumpet, a trombone, four violins, and a lettuce head. How many musical instruments do I have?", "target": ["thirteen", "13"], "neg_llm": "9"}
+{"input": "I have a microwave, a chair, and a table. How many objects do I have?", "target": ["three", "3"], "neg_llm": "4"}
+{"input": "I have two drums, two flutes, and a trumpet. How many musical instruments do I have?", "target": ["five", "5"], "neg_llm": "4"}
+{"input": "I have four bananas, a raspberry, two peaches, and an apple. How many fruits do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have an accordion, a clarinet, a violin, four flutes, two pianos, four trumpets, a drum, and a trombone. How many musical instruments do I have?", "target": ["fifteen", "15"], "neg_llm": "12"}
+{"input": "I have an orange, four bananas, a raspberry, a strawberry, a nectarine, a grape, a peach, a clarinet, a flute, a trumpet, two apples, and a blackberry. How many fruits do I have?", "target": ["thirteen", "13"], "neg_llm": "9"}
+{"input": "I have a chair, a lamp, an oven, a stove, a bed, a couch, three cars, a fridge, a microwave, and a toaster. How many objects do I have?", "target": ["twelve", "12"], "neg_llm": "9"}
+{"input": "I have a grape, a trombone, a drum, a blackberry, an apple, two nectarines, a plum, and two clarinets. How many fruits do I have?", "target": ["six", "6"], "neg_llm": "5"}
+{"input": "I have three pianos, a drum, and four trombones. How many musical instruments do I have?", "target": ["eight", "8"], "neg_llm": "7"}
+{"input": "I have a garlic, an onion, two yams, a cabbage, three stalks of celery, a lettuce head, a cauliflower, a carrot, and a potato. How many vegetables do I have?", "target": ["twelve", "12"], "neg_llm": "7"}
+{"input": "I have a duck, a bear, a rabbit, a dog, and a snake. How many animals do I have?", "target": ["five", "5"], "neg_llm": "6"}
+{"input": "I have two cats, a mouse, two donkeys, a chicken, a bear, a dog, and a fish. How many animals do I have?", "target": ["nine", "9"], "neg_llm": "7"}
