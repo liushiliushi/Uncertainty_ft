@@ -88,3 +88,43 @@ def get_professional_law(tokenizer, split, generate="vanilla"):
 
     return dataset
 
+
+def get_professional_law2(tokenizer, split, generate="vanilla"):
+    if split == 'train':
+        path = '../dataset/data/test/professional_law_test_neg.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+    else:
+        path = '../dataset/data/val/professional_law_val_neg.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+
+    def apply_prompt_template(sample):
+        if sample['label'] == 1:
+            answer = sample['real_answer']
+        else:
+            answer = sample['neg_llm2']
+        question = sample['question']
+
+        return {
+            "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {answer}\nP: ",
+            "y": int(sample['label']),
+        }
+
+    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+
+    def tokenize_add_label(sample):
+        prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
+
+        sample = {
+            "input_ids": prompt,
+            "attention_mask" : [1] * (len(prompt)),
+            # 'conf_index': torch.tensor([len(prompt) - 1]),
+            'y': [sample['y']]
+            }
+
+        return sample
+
+    dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+
+    return dataset
+
+
