@@ -25,6 +25,7 @@ from llama_recipes.policies import fpSixteen, bfSixteen, get_llama_wrapper
 from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
+from llama_recipes.utils.compute_metrics import compute_conf_metrics
 
 
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
@@ -123,7 +124,7 @@ def train(model, train_dataloader, eval_dataloader, tokenizer, optimizer, lr_sch
     # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to('cuda:0')
+    num_indices = torch.tensor(token_ids).to(model.device)
 
     # Start the training loop
     for epoch in range(train_config.num_epochs):
@@ -161,19 +162,12 @@ def train(model, train_dataloader, eval_dataloader, tokenizer, optimizer, lr_sch
                             if is_xpu_available():
                                 batch[key] = batch[key].to('xpu:0')
                             else:
-                                batch[key] = batch[key].to('cuda:0')
+                                batch[key] = batch[key].to(model.device)
 
                     y = batch.data.pop('y')
                     with autocast():
                         # get the
-                        # outputs = model.generate(input_ids=batch['input_ids'],
-                        #                          max_new_tokens=2, return_dict_in_generate=True,
-                        #                          output_scores=True, output_hidden_states=True)
-                        #
-                        # output = tokenizer.decode(outputs[0][0][batch['input_ids'].shape[-1]:], skip_special_tokens=True)
-
                         logits = model(**batch).logits
-
 
                     probabilities = F.softmax(logits, dim=-1)
                     decoded_indices = torch.argmax(probabilities, dim=-1)
@@ -182,13 +176,22 @@ def train(model, train_dataloader, eval_dataloader, tokenizer, optimizer, lr_sch
                                      decoded_indices]
 
                     num_token = logits[:, -1, :]  # get the logit of the confidence token
-                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
-                    num_conf = F.softmax(num_conf, dim=1)
-                    # compute the loss
                     scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to('cuda:0')
-                    y_expanded = y.expand(logits.shape[0], 101)
-                    squared_differences = (y_expanded - scores) ** 2
-                    loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+
+                    if train_config.loss_type == 'brier':
+                        num_conf = torch.index_select(num_token, 1,
+                                                      num_indices.squeeze(0))  # take out the logit of 0-100
+                        num_conf = F.softmax(num_conf, dim=1)
+                        # compute the loss
+                        y_expanded = y.expand(logits.shape[0], 101)
+                        squared_differences = (y_expanded - scores) ** 2
+                        loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                    elif train_config.loss_type == 'sot':
+                        norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                        smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                        smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                        loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
+
                     print(
                         f"\nlabel: {y[0].item()}  {y[1].item()}  {y[2].item()}  {y[3].item()}")  # {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
                     print(
@@ -389,18 +392,17 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wand
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
     model.eval()
-    eval_preds = []
+    all_y = []
+    eval_probs = []
     val_step_loss = []
     val_step_perplexity = []
     eval_loss = 0.0  # Initialize evaluation loss
     total_eval_steps = 0
-    num_indices = torch.tensor(
-        [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 605, 806, 717, 1032, 975, 868, 845, 1114, 972, 777, 508, 1691, 1313,
-         1419, 1187, 914, 1627, 1544, 1591, 1682, 966, 2148, 843, 1644, 1958, 1758, 1927, 1806, 1987, 2137, 1272, 3174,
-         2983, 3391, 2096, 1774, 2790, 2618, 2166, 2491, 1135, 3971, 4103, 4331, 4370, 2131, 3487, 3226, 2970, 2946,
-         1399, 5547, 5538, 5495, 1227, 2397, 2287, 3080, 2614, 3076, 2031, 6028, 5332, 5958, 5728, 2075, 4767, 2813,
-         2495, 4643, 1490, 5932, 6086, 6069, 5833, 5313, 4218, 4044, 2421, 4578, 1954, 5925, 6083, 6365, 6281, 2721,
-         4161, 3534, 3264, 1484, 1041]).to('cuda:0')
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
+
 
     with MemoryTrace() as memtrace:
         for step, batch in enumerate(
@@ -419,7 +421,7 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wand
                     if is_xpu_available():
                         batch[key] = batch[key].to('xpu:0')
                     else:
-                        batch[key] = batch[key].to('cuda:0')
+                        batch[key] = batch[key].to(model.device)
             # conf_index = batch.data.pop('conf_index')
             y = batch.data.pop('y')
             # Ensure no gradients are computed for this scope to save memory
@@ -428,13 +430,20 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wand
                 outputs = model(**batch)
                 logits = outputs.logits
                 num_token = logits[:, -1, :]  # get the logit of the confidence token
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
-                # compute the loss
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to('cuda:0')
-                y_expanded = y.expand(logits.shape[0], 101)
-                squared_differences = (y_expanded - scores) ** 2
-                loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0))  # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(logits.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
 
                 if train_config.save_metrics:
                     val_step_loss.append(loss.detach().float().item())
@@ -442,10 +451,14 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wand
 
                 eval_loss += loss.detach().float()
             # Decode predictions and add to evaluation predictions list
-            preds = torch.argmax(outputs.logits, -1)
-            eval_preds.extend(
-                tokenizer.batch_decode(preds.detach().cpu().numpy(), skip_special_tokens=True)
-            )
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            eval_probs.extend(probs.detach().cpu().numpy().tolist())
+            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    val_metrics = compute_conf_metrics(all_y, eval_probs)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
 
     # If there's more than one CUDA device, reduce evaluation loss across all devices
     if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
@@ -470,6 +483,8 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wand
         wandb_run.log({
             'eval/perplexity': eval_ppl,
             'eval/loss': eval_epoch_loss,
+            'eval/ece': ece_score,
+            'eval/roc_auc': roc_auc_score,
         }, commit=False)
 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
