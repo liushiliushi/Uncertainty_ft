@@ -382,13 +382,10 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
     val_step_perplexity = []
     eval_loss = 0.0  # Initialize evaluation loss
     total_eval_steps = 0
-    num_indices = torch.tensor(
-        [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 605, 806, 717, 1032, 975, 868, 845, 1114, 972, 777, 508, 1691, 1313,
-         1419, 1187, 914, 1627, 1544, 1591, 1682, 966, 2148, 843, 1644, 1958, 1758, 1927, 1806, 1987, 2137, 1272, 3174,
-         2983, 3391, 2096, 1774, 2790, 2618, 2166, 2491, 1135, 3971, 4103, 4331, 4370, 2131, 3487, 3226, 2970, 2946,
-         1399, 5547, 5538, 5495, 1227, 2397, 2287, 3080, 2614, 3076, 2031, 6028, 5332, 5958, 5728, 2075, 4767, 2813,
-         2495, 4643, 1490, 5932, 6086, 6069, 5833, 5313, 4218, 4044, 2421, 4578, 1954, 5925, 6083, 6365, 6281, 2721,
-         4161, 3534, 3264, 1484, 1041]).to('cuda:0')
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
 
     with MemoryTrace() as memtrace:
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):

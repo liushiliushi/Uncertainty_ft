@@ -11,7 +11,7 @@ from llama_recipes.datasets2.samsum_dataset import get_preprocessed_samsum as ge
 from llama_recipes.datasets2.toxicchat_dataset import get_llamaguard_toxicchat_dataset as get_llamaguard_toxicchat_dataset
 from llama_recipes.datasets2.professional_law import get_professional_law2
 from llama_recipes.datasets2.strategyqa_dataset import get_strategyqa
-from llama_recipes.datasets2.object_cou import get_object_cou2
+from llama_recipes.datasets2.object_cou import get_object_cou
 DATASET_PREPROC = {
     "alpaca_dataset": partial(get_alpaca_dataset),
     "grammar_dataset": get_grammar_dataset,
@@ -21,5 +21,5 @@ DATASET_PREPROC = {
     "gsm8k_dataset": get_gsm8k_dataset2,
     "professional_law": get_professional_law2,
     "strategyqa": get_strategyqa,
-    "object_cou": get_object_cou2
+    "object_cou": get_object_cou
 }
