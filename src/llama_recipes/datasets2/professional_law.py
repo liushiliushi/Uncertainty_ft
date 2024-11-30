@@ -32,7 +32,13 @@ def get_professional_law(tokenizer, split, generate="vanilla"):
             path = '../dataset/data/test/professional_law_test_neg.csv'
         else:
             path = '../dataset/data/test/professional_law_test.csv'
-        dataset = datasets.load_dataset('csv', data_files=path, split='train')
+        dataset = datasets.load_dataset('csv', data_files=path, split='train[:1200]')
+    elif split == "val":
+        if generate == 'llm':
+            path = '../dataset/data/test/professional_law_test_neg.csv'
+        else:
+            path = '../dataset/data/test/professional_law_test.csv'
+        dataset = datasets.load_dataset('csv', data_files=path, split='train[1200:]')
     else:
         if generate == 'llm':
             path = '../dataset/data/val/professional_law_val_neg.csv'
@@ -42,18 +48,22 @@ def get_professional_law(tokenizer, split, generate="vanilla"):
     character = ["(A)", "(B)", "(C)", "(D)", "(E)", "(F)", "(G)", "(H)", "(I)", "(J)", "(K)", "(L)", "(M)", "(N)",
                  "(O)", "(P)", "(Q)", "(R)", "(S)", "(T)", "(U)", "(V)", "(W)", "(X)", "(Y)", "(Z)"]
 
-    def apply_prompt_template(sample):
+    def apply_prompt_template(sample, split):
         raw_question = sample['0']
         pos_answer = character[ord(sample['5']) - ord("A")]
         options = [sample[str(i)] for i in range(1, 5)]
         question = raw_question + '\n' + 'Options: '
         for i in range(4):
             question += character[i] + " " + options[i] + "  "
+        if split == "test":
+            prompt = f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\n"
+        else:
+            prompt = f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {pos_answer}\nP: "
         return {
-            "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {pos_answer}\nP: ",
+            "prompt": prompt,
             "y": 1,
         }
-    def apply_prompt_template_neg(sample):
+    def apply_prompt_template_neg(sample, split):
         raw_question = sample['0']
         if generate == "vanilla":
             neg_answer = character[((ord(sample['5']) - ord("A")) - 1) % 4]
@@ -63,8 +73,12 @@ def get_professional_law(tokenizer, split, generate="vanilla"):
         question = raw_question + '\n' + 'Options: '
         for i in range(4):
             question += character[i] + " " + options[i] + "  "
+        if split == "test":
+            prompt = f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\n"
+        else:
+            prompt = f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {neg_answer}\nP: "
         return {
-            "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {neg_answer}\nP: ",
+            "prompt": prompt,
             "y": 0,
         }
 

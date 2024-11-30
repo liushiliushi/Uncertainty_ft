@@ -471,6 +471,98 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
+def test(model,test_config, test_dataloader, local_rank, tokenizer, wandb_run):
+    """
+    Evaluates the model on the given dataloader
+
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    if train_config.enable_fsdp:
+        world_size = int(os.environ["WORLD_SIZE"])
+    model.eval()
+    all_y = []
+    eval_probs = []
+    val_step_loss = []
+    val_step_perplexity = []
+    eval_loss = 0.0  # Initialize evaluation loss
+    total_eval_steps = 0
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
+
+    with MemoryTrace() as memtrace:
+        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
+            total_eval_steps += 1
+            # stop when the maximum number of eval steps is reached
+            if train_config.max_eval_step > 0 and total_eval_steps > train_config.max_eval_step:
+                if not train_config.enable_fsdp or local_rank==0:
+                    print("max eval steps reached, stopping test, total_eval_steps: ", total_eval_steps - 1)
+                break
+            batch.data.pop('labels')
+            for key in batch.keys():
+                if train_config.enable_fsdp:
+                    batch[key] = batch[key].to(local_rank)
+                else:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to('xpu:0')
+                    else:
+                        batch[key] = batch[key].to('cuda:0')
+            # conf_index = batch.data.pop('conf_index')
+            y = batch.data.pop('y')
+            # Ensure no gradients are computed for this scope to save memory
+            with torch.no_grad():
+                # Forward pass and compute loss
+                outputs = model.generate(input_ids=input_ids,
+                             max_new_tokens=max_tokens,return_dict_in_generate=True, output_scores=True, output_hidden_states=True)
+
+                output = tokenizer.decode(outputs[0][0][input_ids.shape[-1]:], skip_special_tokens=True)
+
+            # Decode predictions and add to evaluation predictions list
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            eval_probs.extend(probs.detach().cpu().numpy().tolist())
+            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    val_metrics = compute_conf_metrics(all_y, eval_probs)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+
+    # If there's more than one CUDA device, reduce evaluation loss across all devices
+    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+
+    # Compute average loss and perplexity
+    eval_epoch_loss = eval_loss / len(eval_dataloader)
+    if train_config.enable_fsdp:
+        eval_epoch_loss = eval_epoch_loss/world_size
+    eval_ppl = torch.exp(eval_epoch_loss)
+
+    # Print evaluation metrics
+    if train_config.enable_fsdp:
+        if local_rank==0:
+            print(f" {eval_ppl=} {eval_epoch_loss=}")
+    else:
+        print(f" {eval_ppl=} {eval_epoch_loss=}")
+
+    if wandb_run:
+        wandb_run.log({
+                        'eval/perplexity': eval_ppl,
+                        'eval/loss': eval_epoch_loss,
+                        'eval/ece': ece_score,
+                        'eval/roc_auc': roc_auc_score,
+                    }, commit=False)
+
+    return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
+
 
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
