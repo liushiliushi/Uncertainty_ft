@@ -38,6 +38,7 @@ class train_config:
     quantization: str = None
     one_gpu: bool = False
     save_model: bool = True
+    merge_peft: bool = True
     dist_checkpoint_root_folder: str="PATH/to/save/FSDP/model" # will be used if using FSDP
     dist_checkpoint_folder: str="fine-tuned" # will be used if using FSDP
     save_optimizer: bool=False # will be used if using FSDP

@@ -9,9 +9,5 @@ settings.json
 *src/checkpoints/*
 Meta-Llama*
 dataset/data.tar
-src/ft_law_1103_sot_neg.log
-src/ft_object_1103_brier_neg.log
-src/ft_object_1103_brier.log
-src/ft_object_1103_llm2.log
-src/ft_object_1103_sot_neg.log
-src/ft_object_1103_sot.log
+src/*.log
+dataset/data/auxiliary_train/race.csv

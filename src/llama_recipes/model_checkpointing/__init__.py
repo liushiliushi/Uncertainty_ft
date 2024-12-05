@@ -6,6 +6,7 @@ from llama_recipes.model_checkpointing.checkpoint_handler import (
     save_fsdp_model_checkpoint_full,
     save_peft_checkpoint,
     save_model_checkpoint,
+    save_merged_checkpoint,
     load_optimizer_checkpoint,
     save_optimizer_checkpoint,
     save_model_and_optimizer_sharded,

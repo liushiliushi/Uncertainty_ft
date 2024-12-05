@@ -277,7 +277,10 @@ def save_peft_checkpoint(model, model_path):
         model.save_pretrained(model_path, state_dict=state_dict)
     else:
         model.save_pretrained(model_path)
-    
+
+def save_merged_checkpoint(model, tokenizer, model_path):
+    model.save_pretrained(model_path)  
+    tokenizer.save_pretrained(model_path)
     
 def save_model_checkpoint(model, output_dir):
     """save model when not peft and on single device"""
