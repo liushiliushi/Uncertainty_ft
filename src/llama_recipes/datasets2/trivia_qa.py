@@ -52,14 +52,14 @@ def normalize_answer(s):
 
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
-        path = '/home/lyb/workspace/pragmatic_calibration/data/trivia_qa/tqa_train3.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:7500]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:100]')
     elif split == 'val':
-        path = '/home/lyb/workspace/pragmatic_calibration/data/trivia_qa/tqa_train3.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[7500:]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[100:200]')
     else:
-        path = '/home/lyb/workspace/pragmatic_calibration/data/trivia_qa/tqa_val.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[200:300]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
@@ -87,9 +87,9 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
             ]
         answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
-        y  = 1 if normalize_answer(answer).lower().strip() in eval(sample['correct_answer']) else 0
+        y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
         return {
-            "prompt": json.dumps(prompt),
+            "prompt": prompt,
             "y": y,
             # 'answer': sample['answer'],
             # 'correct_answer': sample['correct_answer']
@@ -121,7 +121,7 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             ]
         return {
             "prompt": json.dumps(prompt),
-            "correct_answer": sample['correct_answer'],
+            "correct_answer": json.dumps(sample['correct_answer']),
         }
 
     if split == 'test':
