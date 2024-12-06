@@ -260,7 +260,7 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         # pin_memory=True,
-        batch_size=2
+        batch_size=8
     )
 
     eval_dataloader = None

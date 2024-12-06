@@ -400,8 +400,8 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
-    print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
+    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
+    # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
