@@ -8,7 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime
 import contextlib
-from vllm import LLM
+# from vllm import LLM
 # from vllm.lora.request import LoRARequest
 import torch
 import torch.cuda.nccl as nccl
@@ -832,21 +832,10 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     }
 
     with MemoryTrace() as memtrace:
-        # id = 0
         for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
-            # if id == 55:
-            #     stop = 1
-            #     id += 1
-            # else:
-            #     id += 1
-            #     continue
             prompts = [json.loads(item) for item in batch["prompt"]]
             query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
-            if train_config.max_eval_step > 0 and total_eval_steps > train_config.max_eval_step:
-                if not train_config.enable_fsdp or local_rank==0:
-                    print("max eval steps reached, stopping test, total_eval_steps: ", total_eval_steps - 1)
-                break
             
             # Ensure no gradients are computed for this scope to save memory
             with torch.no_grad():
