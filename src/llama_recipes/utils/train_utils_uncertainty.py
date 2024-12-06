@@ -853,7 +853,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
                 # Forward pass and compute loss
                 responses = model.generate(query_tensors, **generation_kwargs) 
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                confidences, y = postprocess_extract(prompts, batch_responses, model, tokenizer,  batch['correct_answer'],)
+                confidences, y = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
                      
             all_y.extend(y)
             test_probs.extend(confidences)
@@ -868,19 +868,6 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
         dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
     if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
         dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-
-    # Compute average loss and perplexity
-    # eval_epoch_loss = eval_loss / len(eval_dataloader)
-    # if train_config.enable_fsdp:
-    #     eval_epoch_loss = eval_epoch_loss/world_size
-    # eval_ppl = torch.exp(eval_epoch_loss)
-
-    # Print evaluation metrics
-    # if train_config.enable_fsdp:
-    #     if local_rank==0:
-    #         print(f" {eval_ppl=} {eval_epoch_loss=}")
-    # else:
-    #     print(f" {eval_ppl=} {eval_epoch_loss=}")
 
     if wandb_run:
         wandb_run.log({

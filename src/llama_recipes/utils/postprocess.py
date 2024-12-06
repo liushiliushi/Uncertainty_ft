@@ -25,8 +25,44 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
 
+def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_qa'):
+    if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
+        y, out_confidences = [], []
+       
+        id = 0
+        for prompt, answer in zip(prompts, answers): 
+            prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
+            questions.append(prompt_question)
+            question_blocks = re.split("(Question:)", answer)
+            for qblock in question_blocks:
+                if prompt_question[:-2] in qblock:
+                    qblock = re.sub("</s>", "", qblock)
+                    matches1 = re.findall("Final answer: (.*)", qblock)
+                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    if matches1 and matches2:
+                        out_confidences.append(matches[-1])  # 如果有匹配，取最后一个
+                        if normalize_answer(mathes1[-1]).lower().strip() in json.loads(correct_answers[id]):
+                            y.append(1)
+                        else:
+                            y.append(0)
+                    else:
+                        y.append(None)
+                        out_confidences.append(None)  # 如果没有匹配，添加一个默认值（如 None）
+            id += 1
 
-def postprocess_extract(prompts, answers, model, tokenizer, correct_answers, dataset_name='trivia_qa'):
+        filtered_out_confidences = []
+        filtered_y = []
+        for confidence, label in zip(out_confidences, y):
+            if (confidence is not None) and (label is not None):
+                filtered_out_confidences.append(confidence)
+                filtered_y.append(label)
+        filtered_out_confidences = [float(percent.strip('%')) / 100 for percent in filtered_out_confidences]
+
+        return filtered_out_confidences, filtered_y
+
+
+
+def postprocess_extract2(prompts, answers, model, tokenizer, correct_answers, dataset_name='trivia_qa'):
     if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
         out_responses, out_answers, out_confidences, rationales, questions = [], [], [], [], []
 
