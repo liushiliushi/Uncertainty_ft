@@ -39,7 +39,7 @@ def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_
                     matches1 = re.findall("Final answer: (.*)", qblock)
                     matches2 = re.findall("Confidence: (.*)", qblock)
                     if matches1 and matches2:
-                        out_confidences.append(matches1[-1])  # 如果有匹配，取最后一个
+                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
                         if normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id]):
                             y.append(1)
                         else:
