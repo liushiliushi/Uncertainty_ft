@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
-
+import torch
 from collections import Counter
 import os
 
@@ -9,7 +9,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire
 import random
-import torch
+import os
 import torch.optim as optim
 from peft import get_peft_model, PeftModel, AutoPeftModelForCausalLM
 from torch.distributed.fsdp import (
@@ -323,4 +323,5 @@ def main(**kwargs):
 
 
 if __name__ == "__main__":
+    
     fire.Fire(main)

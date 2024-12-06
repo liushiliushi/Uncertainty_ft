@@ -121,7 +121,7 @@ def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, o
     # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to('cuda:0')
+    num_indices = torch.tensor(token_ids).to(model.device)
 
     # Start the training loop
     for epoch in range(train_config.num_epochs):
@@ -158,7 +158,7 @@ def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, o
                             if is_xpu_available():
                                 batch[key] = batch[key].to('xpu:0')
                             else:
-                                batch[key] = batch[key].to('cuda:0')
+                                batch[key] = batch[key].to(model.device)
 
                     y = batch.data.pop('y')
                     with autocast():
@@ -734,7 +734,7 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
                     if is_xpu_available():
                         batch[key] = batch[key].to('xpu:0')
                     else:
-                        batch[key] = batch[key].to('cuda:0')
+                        batch[key] = batch[key].to(model.device)
             # conf_index = batch.data.pop('conf_index')
             y = batch.data.pop('y')
             # Ensure no gradients are computed for this scope to save memory

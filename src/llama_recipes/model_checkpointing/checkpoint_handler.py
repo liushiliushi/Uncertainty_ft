@@ -14,7 +14,7 @@ from torch.distributed.fsdp import (
     # ShardedStateDictConfig, # un-flattened param but shards, usable by other parallel schemes.
 )
 
-from torch.distributed._shard.checkpoint import (
+from torch.distributed.checkpoint import (
     FileSystemReader,
     FileSystemWriter,
     save_state_dict,
@@ -104,18 +104,30 @@ def save_model_and_optimizer_sharded(model, rank, cfg,optim=None):
     )
     t0 = time.perf_counter()
 
-    with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+    # with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
         
-        state_dict = {"model": model.state_dict()}
-        if optim is not None:
-            state_dict["optim"] = FSDP.optim_state_dict(model, optim)
+    #     state_dict = {"model": model.state_dict()}
+    #     if optim is not None:
+    #         state_dict["optim"] = FSDP.optim_state_dict(model, optim)
 
-        dist_cp.save_state_dict(
-            state_dict=state_dict,
-            storage_writer=distributed_writer,
-            planner=DefaultSavePlanner(),
+    #     dist_cp.save_state_dict(
+    #         state_dict=state_dict,
+    #         storage_writer=distributed_writer,
+    #         planner=DefaultSavePlanner(),
             
-        )
+    #     )
+    state_dict = FSDP.get_state_dict(model, StateDictType.SHARDED_STATE_DICT)
+        
+    state_dict = {"model": state_dict}
+    if optim is not None:
+        state_dict["optim"] = FSDP.optim_state_dict(model, optim)
+
+    dist_cp.save_state_dict(
+        state_dict=state_dict,
+        storage_writer=distributed_writer,
+        planner=DefaultSavePlanner(),
+            
+    )
     dist.barrier()
     t1 = time.perf_counter()
     if rank == 0:
@@ -132,12 +144,17 @@ def save_fsdp_model_checkpoint_full(
 ):
     """saving model via rank0 cpu streaming and full_state_dict"""
 
-    with FSDP.state_dict_type(
-        model, StateDictType.FULL_STATE_DICT, fullstate_save_policy
-    ):
-        cpu_state = model.state_dict()
+    # with FSDP.state_dict_type(
+    #     model, StateDictType.FULL_STATE_DICT, fullstate_save_policy
+    # ):
+    #     cpu_state = model.state_dict()
 
-        print(f"saving process: rank {rank}  done w model state_dict\n")
+    #     print(f"saving process: rank {rank}  done w model state_dict\n")
+
+    cpu_state = FSDP.get_state_dict(
+        model, StateDictType.FULL_STATE_DICT, fullstate_save_policy
+    )
+    print(f"saving process: rank {rank}  done w model state_dict\n")
    
 
     if rank == 0:
@@ -271,7 +288,6 @@ def save_peft_checkpoint(model, model_path):
     """save_pretrained peft model"""
 
     options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-    
     if isinstance(model, FSDP):
         state_dict = get_model_state_dict(model, options=options)
         model.save_pretrained(model_path, state_dict=state_dict)
