@@ -66,3 +66,43 @@ def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
     return dataset
 
 
+def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
+    if split == 'train':
+        path = '../dataset/grade_school_math/data/train_negllm.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+    else:
+        path = '../dataset/grade_school_math/data/test_negllm.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+
+
+    def apply_prompt_template(sample):
+        if sample['label'] == 1:
+            answer = sample['real_answer']
+        else:
+            answer = sample['neg_llm2']
+        question = sample['question']
+        return {
+            "prompt": f"Question: {question}\n Answer: {answer} \n Provide the probability that the answer for the question is correct (0% to 100%). The response should follow the format:\nP: <The probability that the answer is correct>.\nP: ",
+            "y": sample['label'],
+        }
+
+
+    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+
+
+    def tokenize_add_label(sample):
+        prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
+
+        sample = {
+            "input_ids": prompt,
+            "attention_mask" : [1] * (len(prompt)),
+            'y': [sample['y']]
+            }
+
+        return sample
+
+    dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+
+    return dataset
+
+
