@@ -5,6 +5,7 @@ from collections import Counter
 import os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire
 import random
@@ -45,6 +46,7 @@ from llama_recipes.utils.dataset_utils import get_preprocessed_dataset, get_prep
 from llama_recipes.utils.fsdp_utils import hsdp_device_mesh
 from llama_recipes.utils.train_utils_uncertainty import (
     train,
+    train_chat,
     freeze_transformer_layers,
     setup,
     setup_environ_flags,
@@ -226,9 +228,16 @@ def main(**kwargs):
     dataset_val = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
+        'val',
+        train_config.generate
+    )
+    dataset_test = get_preprocessed_dataset2(
+        tokenizer,
+        train_config.dataset,
         'test',
         train_config.generate
     )
+
     if not train_config.enable_fsdp or rank == 0:
         print(f"--> Validation Set Length = {len(dataset_val)}")
 
@@ -244,6 +253,14 @@ def main(**kwargs):
         # num_workers=train_config.num_workers_dataloader,
         pin_memory=True,
         **train_dl_kwargs,
+    )
+
+    test_dataloader = torch.utils.data.DataLoader(
+        dataset_test,
+        num_workers= 0,
+        # num_workers=train_config.num_workers_dataloader,
+        # pin_memory=True,
+        batch_size=10
     )
 
     eval_dataloader = None
@@ -283,10 +300,11 @@ def main(**kwargs):
         )
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     # Start the training process
-    results = train(
+    results = train_chat(
         model,
         train_dataloader,
         eval_dataloader,
+        test_dataloader,
         tokenizer,
         optimizer,
         scheduler,
