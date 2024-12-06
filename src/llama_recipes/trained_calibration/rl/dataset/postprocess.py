@@ -9,22 +9,22 @@ def postprocess_extract(prompts, answers, correct_answers, dataset_name):
         confidences = []
         correct_answers_final = []
 
-        extraction_prompt = [{'role': 'system', 'content': """Please extract a single answer from the following response to a question.
-            If no answer is present, please write "NONE".
+        # extraction_prompt = [{'role': 'system', 'content': """Please extract a single answer from the following response to a question.
+        #     If no answer is present, please write "NONE".
 
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Final answer: John Milton
+        #     Question: Who wrote Paradise Lost?
+        #     Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+        #     Final answer: John Milton
 
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Final answer: France
+        #     Question: Which colonial power did Algeria gain independence from in 1962? 
+        #     Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+        #     Final answer: France
 
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Final answer: NONE"""},
+        #     Question: How many planets are in our solar system?
+        #     Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+        #     Final answer: NONE"""},
             
-            ]
+        #     ]
        
         id = 0
         for prompt, answer in zip(prompts, answers): 
@@ -42,17 +42,17 @@ def postprocess_extract(prompts, answers, correct_answers, dataset_name):
                     # batch_prompts.append(prompt)
                     # out_responses.append(re.findall("Response: (.*)", qblock)[-1])
                     out_response = re.findall(r"Response:\s*((?:.|\n)*?)(?:\n\n|$)", qblock, re.DOTALL)[-1]
-                    matches = re.findall(r"(Confidence:)(.*)", out_response)[-1]
+                    matches = re.findall(r"(Confidence:)(.*)", out_response)
                     if matches:
-                        confidences.append(matches[1].strip())   
+                        confidences.append(matches[-1][1].strip())   
                         out_responses.append(re.sub(r"(Confidence:)(.*)", r"\1", out_response))
                         questions.append(prompt_question)
                         correct_answers_final.append(correct_answers[id])
                     id += 1
                     break
-            else:
-                prompt = extraction_prompt.format(query =  answer.strip())
-                batch_prompts.append(prompt)
+            # else:
+            #     prompt = extraction_prompt.format(query =  answer.strip())
+            #     batch_prompts.append(prompt)
 
         return questions, out_responses, confidences, correct_answers_final
 

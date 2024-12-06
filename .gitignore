@@ -30,3 +30,5 @@ dataset/trivia_qa/tqa_validation_mistral_v1_small.jsonl
 dataset/truthful_qa/truthful_qa_test_mistral_generator_mistral_evaluator.jsonl
 dataset/trivia_qa/tqa_test.jsonl
 dataset/trivia_qa/tqa_train_single.jsonl
+src/llama_recipes/answer_trivia_1205_train.log
+src/llama_recipes/answer_trivia_1206_train.log

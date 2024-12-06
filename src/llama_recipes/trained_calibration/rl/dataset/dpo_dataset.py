@@ -86,7 +86,7 @@ def main(args):
 
     generation_kwargs = {
         "min_length": 1,
-        "max_new_tokens": 100,
+        "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
         "temperature": 0.7,
@@ -122,8 +122,9 @@ def main(args):
                 for item in responses_by_example:
                     json_line = json.dumps(item)  # 将每个 JSON 对象转换为字符串
                     f1.write(json_line + "\n")    # 写入文件，并换行
+                f1.flush()
                
-            except Exception as e:
+            except RuntimeError as e:
                 print(f"Batch failed with exception: {e}")
                 continue
             # except RuntimeError:
@@ -154,8 +155,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.model_name= "/home/lyb/workspace/meta-llama/Llama-3.1-8B-Instruct" # TODO
     args.reward_model_names = [ "/home/lyb/workspace/meta-llama/Llama-3.1-8B-Instruct"]
-    args.output_dir = "../../dataset/trivia_qa/tqa_train_single.jsonl"
+    args.output_dir = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
     args.split = 'train'
-    args.batch_size=32
+    args.batch_size=24
     args.n_generations=1
     main(args)
