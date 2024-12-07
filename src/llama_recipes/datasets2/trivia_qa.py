@@ -53,13 +53,13 @@ def normalize_answer(s):
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:100]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
     elif split == 'val':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[100:200]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
     else:
-        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[200:300]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
@@ -86,14 +86,20 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             {"role": "user", "content":  f"Question: {sample['question']}"},
             {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
             ]
-        answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
-        y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
-        return {
-            "prompt": prompt,
-            "y": y,
-            # 'answer': sample['answer'],
-            # 'correct_answer': sample['correct_answer']
-        }
+        matches = re.findall("Final answer: (.*)", sample['response_clean'])
+        if matches:
+            answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
+            y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
+            return {
+                "prompt": prompt,
+                "y": y,
+            }
+        else:
+            return {
+                "prompt": prompt,
+                "y": 0,
+            }
+        
     def apply_prompt_template_test(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
