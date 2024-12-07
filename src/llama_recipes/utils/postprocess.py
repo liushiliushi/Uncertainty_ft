@@ -55,7 +55,7 @@ def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_
             if (confidence is not None) and (label is not None):
                 filtered_out_confidences.append(confidence)
                 filtered_y.append(label)
-        filtered_out_confidences = [float(percent.strip('%')) / 100 for percent in filtered_out_confidences]
+        filtered_out_confidences = [float(percent.strip().strip('%')) / 100 for percent in filtered_out_confidences]
 
         return filtered_out_confidences, filtered_y
 
