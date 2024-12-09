@@ -59,7 +59,7 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
         dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
     else:
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.

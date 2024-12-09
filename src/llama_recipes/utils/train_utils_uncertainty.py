@@ -400,7 +400,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
+    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
@@ -834,7 +834,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     with MemoryTrace() as memtrace:
         for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
             prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
             
             # Ensure no gradients are computed for this scope to save memory
@@ -848,6 +848,8 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
             test_probs.extend(confidences)
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
+    number = len(all_y)
+    print(f"Number: {number}")
     val_metrics = compute_conf_metrics(all_y, test_probs)
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
