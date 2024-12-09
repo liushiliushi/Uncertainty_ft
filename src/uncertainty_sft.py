@@ -4,8 +4,8 @@ import torch
 from collections import Counter
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,6,5"
+# os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire
 import random
@@ -260,7 +260,7 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         # pin_memory=True,
-        batch_size=16
+        batch_size=4
     )
 
     eval_dataloader = None
