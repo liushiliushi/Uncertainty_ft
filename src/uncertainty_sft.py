@@ -4,12 +4,11 @@ import torch
 from collections import Counter
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,6,5"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,6,5"
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire
 import random
-import os
 import torch.optim as optim
 from peft import get_peft_model, PeftModel, AutoPeftModelForCausalLM
 from torch.distributed.fsdp import (
@@ -47,6 +46,7 @@ from llama_recipes.utils.fsdp_utils import hsdp_device_mesh
 from llama_recipes.utils.train_utils_uncertainty import (
     train,
     train_chat,
+    train_token,
     freeze_transformer_layers,
     setup,
     setup_environ_flags,
@@ -252,7 +252,8 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         pin_memory=True,
-        **train_dl_kwargs,
+        batch_sampler=train_dl_kwargs['batch_sampler']
+        # **train_dl_kwargs,
     )
 
     test_dataloader = torch.utils.data.DataLoader(
@@ -260,7 +261,7 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         # pin_memory=True,
-        batch_size=4
+        batch_size=12
     )
 
     eval_dataloader = None
@@ -274,7 +275,8 @@ def main(**kwargs):
             dataset_val,
             num_workers=train_config.num_workers_dataloader,
             pin_memory=True,
-            **val_dl_kwargs,
+            # **val_dl_kwargs,
+            batch_sampler = val_dl_kwargs['batch_sampler'],
         )
         if len(eval_dataloader) == 0:
             raise ValueError(
@@ -300,7 +302,7 @@ def main(**kwargs):
         )
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     # Start the training process
-    results = train_chat(
+    results = train_token(
         model,
         train_dataloader,
         eval_dataloader,

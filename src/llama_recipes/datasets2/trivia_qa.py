@@ -53,13 +53,17 @@ def normalize_answer(s):
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
     else:
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
@@ -130,10 +134,11 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             "correct_answer": json.dumps(sample['correct_answer']),
         }
 
-    if split == 'test':
-        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
-    else:
-        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+    # if split == 'test':
+    #     dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    # else:
+    #     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+    dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
@@ -147,10 +152,10 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             }
 
         return sample
-    if split == 'test':
-        dataset = dataset
-    else:
-        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    # if split == 'test':
+    #     dataset = dataset
+    # else:
+    #     dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
 
     return dataset
 
