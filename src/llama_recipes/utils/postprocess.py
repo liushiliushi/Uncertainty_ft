@@ -25,6 +25,38 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
 
+def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa'):
+    if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
+        out_responses, y_None, y, out_confidences, confidences_None = [], [], [], [], []
+        id = 0
+        for prompt, answer in zip(prompts, answers): 
+            prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
+            question_blocks = re.split("(Question:)", answer)
+            for qblock in question_blocks:
+                if prompt_question[:-2] in qblock:
+                    qblock = re.sub("</s>", "", qblock)
+                    matches1 = re.findall("Final answer: (.*)", qblock)
+                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    if matches1 and matches2 and (matches2[-1] != ''):
+                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
+                        confidences_None.append(matches2[-1])
+                        if normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id]):
+                            y.append(1)
+                            y_None.append(1)
+                        else:
+                            y.append(0)
+                            y_None.append(0)
+                        out_response = re.sub(r"(Confidence:)(.*)", r"\1", answer)
+                        out_responses.append(out_response)
+                    else:
+                        y_None.append(None)
+                        confidences_None.append(None)
+
+            id += 1
+    out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
+
+    return out_responses, out_confidences, y, y_None, confidences_None 
+
 def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_qa'):
     if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
         y, out_confidences = [], []
@@ -57,7 +89,7 @@ def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_
                 filtered_y.append(label)
         filtered_out_confidences = [float(percent.strip().strip('%')) / 100 for percent in filtered_out_confidences]
 
-        return filtered_out_confidences, filtered_y
+        return filtered_out_confidences, filtered_y, y
 
 
 
