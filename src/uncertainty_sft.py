@@ -219,7 +219,7 @@ def main(**kwargs):
         tokenizer,
         train_config.dataset,
         'train',
-        train_config.generate
+        # train_config.generate
     ).shuffle(seed=42)
     # dataset_train = dataset_train[:4]
     if not train_config.enable_fsdp or rank == 0:
@@ -229,13 +229,13 @@ def main(**kwargs):
         tokenizer,
         train_config.dataset,
         'val',
-        train_config.generate
+        # train_config.generate
     )
     dataset_test = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
         'test',
-        train_config.generate
+        # train_config.generate
     )
 
     if not train_config.enable_fsdp or rank == 0:
@@ -252,8 +252,8 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         pin_memory=True,
-        batch_sampler=train_dl_kwargs['batch_sampler']
-        # **train_dl_kwargs,
+        # batch_sampler=train_dl_kwargs['batch_sampler']
+        **train_dl_kwargs,
     )
 
     test_dataloader = torch.utils.data.DataLoader(
@@ -261,7 +261,7 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         # pin_memory=True,
-        batch_size=12
+        batch_size=10
     )
 
     eval_dataloader = None
@@ -275,8 +275,8 @@ def main(**kwargs):
             dataset_val,
             num_workers=train_config.num_workers_dataloader,
             pin_memory=True,
-            # **val_dl_kwargs,
-            batch_sampler = val_dl_kwargs['batch_sampler'],
+            **val_dl_kwargs,
+            # batch_sampler = val_dl_kwargs['batch_sampler'],
         )
         if len(eval_dataloader) == 0:
             raise ValueError(
@@ -302,7 +302,7 @@ def main(**kwargs):
         )
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     # Start the training process
-    results = train_token(
+    results = train_chat(
         model,
         train_dataloader,
         eval_dataloader,
