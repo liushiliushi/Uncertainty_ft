@@ -759,6 +759,7 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
         "output_scores": True,
         "return_dict_in_generate": True
     }
+   
     
     # Start the training loop
     for epoch in range(train_config.num_epochs):
@@ -775,7 +776,13 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader):
-                    
+                    if train_config.enable_fsdp:
+                        dummy_text = "Hello world!"
+                        dummy_batch = tokenizer(dummy_text, return_tensors="pt").to(model.device)
+                        with torch.no_grad():
+                            _ = model(**dummy_batch)
+
+
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
                     prompts = [json.loads(item) for item in batch["prompt"]]
@@ -785,9 +792,10 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
                     responses = output.sequences
                     logits = output.scores
                     batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                        
-                    prompts_new, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'])
-                    
+                    try:
+                        prompts_new, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+                    except:
+                        continue
                     query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
                     white_spaces = torch.full((len(prompts_new), 1), 220)
                     attention = torch.full((len(prompts_new), 1), 1)
@@ -890,13 +898,13 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
         if train_config.run_validation:
             del logits
             torch.cuda.empty_cache()
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+            
             if train_config.save_metrics:
                 val_step_loss.extend(temp_val_loss)
                 val_step_perplexity.extend(temp_step_perplexity)
 
             checkpoint_start_time = time.perf_counter()
-            if train_config.save_model and eval_epoch_loss < best_val_loss:
+            if train_config.save_model: #and eval_epoch_loss < best_val_loss:
                 if train_config.enable_fsdp:
                     dist.barrier()
                 if train_config.use_peft:
@@ -951,9 +959,10 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
                             print("=====================================================")
                             save_model_and_optimizer_sharded(model, rank, train_config)
 
-                        
+               
                 if train_config.enable_fsdp:
                     dist.barrier()
+            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
             checkpoint_end_time = time.perf_counter() - checkpoint_start_time
             checkpoint_times.append(checkpoint_end_time)
             if eval_epoch_loss < best_val_loss:
@@ -1050,12 +1059,14 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
             responses = output.sequences
             logits = output.scores
             batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-            
-            prompts_new, confidences, y, y_None, confidences_None = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+            try:
+                prompts_new, confidences, y, y_None, confidences_None = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+            except:
+                continue
             all_y.extend(y)
             eval_probs.extend(confidences)
-            for response, confidence, y in zip(batch_responses, confidences_None, y_None):
-                wan_table.add_data(response, confidence, y)
+            for response, confidence, y_item in zip(batch_responses, confidences_None, y_None):
+                wan_table.add_data(response, confidence, y_item)
             query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
             white_spaces = torch.full((len(prompts_new), 1), 220)
             attention = torch.full((len(prompts_new), 1), 1)
@@ -1087,7 +1098,8 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
 
                 eval_loss += loss.detach().float()
     if wandb_run:
-        wandb_run.log({"Evaluation_samples": wan_table})
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({"Evaluation_samples": wan_table})
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     val_metrics = compute_conf_metrics(all_y, eval_probs)
     ece_score = val_metrics['ece']
@@ -1113,7 +1125,8 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb
         print(f" {eval_ppl=} {eval_epoch_loss=}")
 
     if wandb_run:
-        wandb_run.log({
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({
                         'eval/perplexity': eval_ppl,
                         'eval/loss': eval_epoch_loss,
                         'eval/ece': ece_score,
@@ -1168,8 +1181,10 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
                 responses = output.sequences
                 logits = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                
-                confidences, y, y_unfiltered = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
+                try:
+                    confidences, y, y_unfiltered = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
+                except:
+                    continue
             for response, confidence, y_item in zip(batch_responses, confidences, y):
                 wan_table.add_data(response, confidence, y_item)        
             all_y.extend(y)
@@ -1177,7 +1192,8 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     if wandb_run:
-        wandb_run.log({"Testing_samples": wan_table})
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({"Testing_samples": wan_table})
     number = len(all_y)
     print(f"Number: {number}")
     val_metrics = compute_conf_metrics(all_y, test_probs)
@@ -1191,7 +1207,8 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
         dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
 
     if wandb_run:
-        wandb_run.log({
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({
                         'test/ece': ece_score,
                         'test/roc_auc': roc_auc_score,
                     }, commit=False)
