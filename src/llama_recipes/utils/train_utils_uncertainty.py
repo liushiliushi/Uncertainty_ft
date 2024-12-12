@@ -463,7 +463,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                             print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
                         break
 
-
+                    # batch.pop('labels')
                     for key in batch.keys():
                         if train_config.enable_fsdp:
                             if is_xpu_available():
@@ -481,8 +481,9 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
                     with autocast():
                         # get the
-                        logits = model(**batch).logits
-
+                        output = model(**batch)
+                        logits = output.logits
+                        loss_con = output.loss
                         # responses = model.generate(batch['input_ids'], **generation_kwargs) 
                         # batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
 
@@ -500,16 +501,17 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                         # compute the loss
                         y_expanded = y.expand(logits.shape[0], 101)
                         squared_differences = (y_expanded - scores) ** 2
-                        loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                        loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
                     elif train_config.loss_type == 'sot':
                         norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
                         smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                         smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                        loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                        loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
 
                     #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
                     # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    print(f"loss: {loss}")
+                    loss = loss_con + loss_cal
+                    print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}")
                     loss = loss / gradient_accumulation_steps
                     if train_config.save_metrics:
                         train_step_loss.append(loss.detach().float().item())
@@ -557,6 +559,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
                     if train_config.save_metrics:
                         save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
+                    torch.cuda.empty_cache()
  
 
         epoch_end_time = time.perf_counter()-epoch_start_time

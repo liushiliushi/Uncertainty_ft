@@ -14,26 +14,26 @@ def get_preprocessed_dataset(
     if not dataset_config.dataset in DATASET_PREPROC:
         raise NotImplementedError(f"{dataset_config.dataset} is not (yet) implemented")
 
-    def get_split():
-        return (
-            dataset_config.train_split
-            if split == "train"
-            else dataset_config.test_split
-        )
+    # def get_split():
+    #     return (
+    #         dataset_config.train_split
+    #         if split == "train"
+    #         else dataset_config.test_split
+    #     )
 
     return DATASET_PREPROC[dataset_config.dataset](
-        dataset_config,
+        # dataset_config,
         tokenizer,
-        get_split(),
+        'train',
     )
 
 def get_preprocessed_dataset2(
-    tokenizer, dataset, split, generate
+    tokenizer, dataset, split #, generate
 ) -> torch.utils.data.Dataset:
 
 
     return DATASET_PREPROC[dataset](
-        tokenizer, split, generate
+        tokenizer, split, 'llm'
     )
 
 def get_dataloader(tokenizer, dataset_config, train_config, split: str = "train"):
