@@ -79,7 +79,7 @@ def get_dataset(dataset_name, limit=None, batch_size=256):
     if dataset_name == "trivia_qa":
         dataset = load_dataset("mandarjoshi/trivia_qa", 
                            "rc.web.nocontext",
-                           cache_dir="/nas-ssd2/esteng/.cache")
+                           cache_dir="/home/lyb/workspace/Uncertainty_ft/dataset/Trivia_qa")
         dataset = dataset.map(add_trivia_qa_prompt, batched=False)
         # limit just to needed keys 
         for key in ["train", "validation", "test"]:

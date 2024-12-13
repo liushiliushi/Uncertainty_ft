@@ -448,12 +448,14 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         if max_steps_reached:
             break
         epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace:  # track the memory usage
+        # TODO:with MemoryTrace() as memtrace:  # track the memory usage
+        if True:
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            with profile(train_config,local_rank) as profile_context:
+            # with profile(train_config,local_rank) as profile_context:
+            if True:
                 for step, batch in enumerate(train_dataloader): # TODO
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
@@ -488,18 +490,19 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                         # batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
 
 
-                    decoded_indices = torch.argmax(logits, dim=-1)
-                    decoded_indices = decoded_indices.tolist()
-                    decoded_texts = [tokenizer.decode(indices[-1], skip_special_tokens=True) for indices in decoded_indices]
+                    # decoded_indices = torch.argmax(logits, dim=-1)
+                    # decoded_indices = decoded_indices.tolist()
+                    # decoded_texts = [tokenizer.decode(indices[-1], skip_special_tokens=True) for indices in decoded_indices]
 
                     num_token = logits[:,-1,:] # get the logit of the confidence token
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to(model.device)
+                    del logits
+                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                     if train_config.loss_type == 'brier':
                         num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
                         num_conf = F.softmax(num_conf, dim=1)
                         # compute the loss
-                        y_expanded = y.expand(logits.shape[0], 101)
+                        y_expanded = y.expand(y.shape[0], 101)
                         squared_differences = (y_expanded - scores) ** 2
                         loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
                     elif train_config.loss_type == 'sot':
@@ -510,7 +513,8 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
                     #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
                     # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    loss = loss_con + loss_cal
+                    # loss = loss_con + loss_cal
+                    loss = loss_cal
                     print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}")
                     loss = loss / gradient_accumulation_steps
                     if train_config.save_metrics:
@@ -543,16 +547,19 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                             optimizer.step()
                             optimizer.zero_grad()
                             pbar.update(1)
-                    if train_config.use_profiler or train_config.flop_counter:
-                        profile_context.step()
-                    if train_config.flop_counter and profile_context.is_done():
-                        TFlops = profile_context.get_flops_per_sec() / 1e12
+                    # TODO
+                    # if train_config.use_profiler or train_config.flop_counter:
+                    #     profile_context.step()
+                    # if train_config.flop_counter and profile_context.is_done():
+                    #     TFlops = profile_context.get_flops_per_sec() / 1e12
                     if wandb_run:
                         if not train_config.enable_fsdp or rank==0:
                             wandb_run.log({
                                 'train/epoch': epoch + 1,
                                 'train/step': epoch * len(train_dataloader) + step,
                                 'train/loss': loss.detach().float(),
+                                'train/loss_con': loss_con.detach().float(),
+                                'train/loss_cal': loss_cal.detach().float()
                             })
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
@@ -577,15 +584,16 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         train_prep.append(float(train_perplexity))
         train_loss.append(float(train_epoch_loss))
 
-        if not train_config.enable_fsdp or rank==0:
-            memtrace.print_stats()
+        # TODO
+        # if not train_config.enable_fsdp or rank==0:
+        #     memtrace.print_stats()
 
         # Update the learning rate as needed
         lr_scheduler.step()
 
 
         if train_config.run_validation:
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
             if train_config.save_metrics:
                 val_step_loss.extend(temp_val_loss)
                 val_step_perplexity.extend(temp_step_perplexity)
@@ -1013,8 +1021,137 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
 
     return results
 
+def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
+    """
+    Evaluates the model on the given dataloader
 
-def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    if train_config.enable_fsdp:
+        world_size = int(os.environ["WORLD_SIZE"])
+    model.eval()
+    all_y = []
+    eval_probs = []
+    val_step_loss = []
+    val_step_perplexity = []
+    eval_loss = 0.0  # Initialize evaluation loss
+    eval_loss_con = 0.0
+    eval_loss_cal = 0.0
+    total_eval_steps = 0
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 100,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0.7,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+        "output_scores": True,
+        "return_dict_in_generate": True
+    }
+    with MemoryTrace() as memtrace:
+        id = 0
+        model.eval()
+        for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
+            for key in batch.keys():
+                if train_config.enable_fsdp:
+                    batch[key] = batch[key].to(local_rank)
+                else:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to('xpu:0')
+                    else:
+                        batch[key] = batch[key].to('cuda:0')
+            with torch.no_grad():
+                output = model(**batch)
+                logits = output.logits
+                loss_con = output.loss
+            num_token = logits[:,-1,:] # get the logit of the confidence token
+            del logits
+            y = batch.data.pop('y')
+            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+
+            if train_config.loss_type == 'brier':
+                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                num_conf = F.softmax(num_conf, dim=1)
+                # compute the loss
+                y_expanded = y.expand(y.shape[0], 101)
+                squared_differences = (y_expanded - scores) ** 2
+                loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+            elif train_config.loss_type == 'sot':
+                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+            if train_config.save_metrics:
+                val_step_loss.append(loss.detach().float().item())
+                val_step_perplexity.append(float(torch.exp(loss.detach().float())))
+
+            # loss = loss_con + loss_cal
+            loss = loss_cal
+            print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
+            
+            eval_loss += loss.detach().float()
+            eval_loss_con += loss_con.detach().float()
+            eval_loss_cal += loss_cal.detach().float()
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            eval_probs.extend(probs.detach().cpu().numpy().tolist())
+            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    val_metrics = compute_conf_metrics(all_y, eval_probs)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+
+    # If there's more than one CUDA device, reduce evaluation loss across all devices
+    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(eval_loss_con, op=dist.ReduceOp.SUM)
+    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(eval_loss_cal, op=dist.ReduceOp.SUM)
+
+    # Compute average loss and perplexity
+    eval_epoch_loss = eval_loss / len(eval_dataloader)
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader)
+    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader)
+    if train_config.enable_fsdp:
+        eval_epoch_loss = eval_epoch_loss/world_size
+        eval_epoch_loss_con = eval_epoch_loss_con/world_size
+        eval_epoch_loss_cal = eval_epoch_loss_cal/world_size
+    eval_ppl = torch.exp(eval_epoch_loss)
+
+    # Print evaluation metrics
+    if train_config.enable_fsdp:
+        if local_rank==0:
+            print(f" {eval_ppl=} {eval_epoch_loss=}")
+    else:
+        print(f" {eval_ppl=} {eval_epoch_loss=}")
+
+    if wandb_run:
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({
+                        'eval/perplexity': eval_ppl,
+                        'eval/loss': eval_epoch_loss,
+                        'eval/loss_con': eval_epoch_loss_con,
+                        'eval/loss_cal': eval_epoch_loss_cal,
+                        'eval/ece': ece_score,
+                        'eval/roc_auc': roc_auc_score,
+                    }, commit=False)
+
+    return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
+
+
+def evaluation_token(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
     """
     Evaluates the model on the given dataloader
 
@@ -1185,10 +1322,10 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
                 logits = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 try:
-                    confidences, y, y_unfiltered = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
+                    confidences, y, y_unfiltered, confidence_unfiltered = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
                 except:
                     continue
-            for response, confidence, y_item in zip(batch_responses, confidences, y):
+            for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        
             all_y.extend(y)
             test_probs.extend(confidences)
