@@ -51,7 +51,7 @@ def normalize_answer(s):
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
@@ -162,7 +162,7 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
 def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')

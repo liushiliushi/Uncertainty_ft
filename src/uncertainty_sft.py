@@ -4,7 +4,7 @@ import torch
 from collections import Counter
 import os
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,6,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire

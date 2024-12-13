@@ -108,7 +108,8 @@ def main(args):
                 query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).to(generator.device)
                 
                 for i in range(args.n_generations):
-                    response_tensors = generator.generate(query_tensors, **generation_kwargs) 
+                    with torch.no_grad():
+                        response_tensors = generator.generate(query_tensors, **generation_kwargs) 
                     batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in response_tensors]
                     
                     questions, out_responses, confidences, correct_answers_final = postprocess_extract(prompts, batch_responses, batch['correct_answer'], args.dataset)
@@ -155,8 +156,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.model_name= "/home/lyb/workspace/meta-llama/Llama-3.1-8B-Instruct" # TODO
     args.reward_model_names = [ "/home/lyb/workspace/meta-llama/Llama-3.1-8B-Instruct"]
-    args.output_dir = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-    args.split = 'train'
+    args.output_dir = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
+    args.split = 'validation'
     args.batch_size=24
-    args.n_generations=1
+    args.n_generations=10
     main(args)
