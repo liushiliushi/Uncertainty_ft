@@ -46,7 +46,7 @@ from llama_recipes.utils.fsdp_utils import hsdp_device_mesh
 from llama_recipes.utils.train_utils_uncertainty import (
     train,
     train_chat,
-    train_token,
+    train_dynamic,
     freeze_transformer_layers,
     setup,
     setup_environ_flags,
@@ -252,7 +252,7 @@ def main(**kwargs):
         num_workers= 0,
         # num_workers=train_config.num_workers_dataloader,
         pin_memory=True,
-        # batch_sampler=train_dl_kwargs['batch_sampler']
+        #batch_sampler=train_dl_kwargs['batch_sampler']
         **train_dl_kwargs,
     )
 

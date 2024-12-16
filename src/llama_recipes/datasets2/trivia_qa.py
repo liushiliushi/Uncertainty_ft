@@ -51,17 +51,134 @@ def normalize_answer(s):
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train')
+
+    def apply_prompt_template(sample):
+        prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+            Finally, please provide your confidence (0%-100%) to your answer.
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Final answer: John Milton
+            Confidence: 90%
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Final answer: France
+            Confidence: 100%
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Final answer: NONE
+            Confidence: 0%"""},
+            {"role": "user", "content":  f"Question: {sample['question']}"},
+            {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
+            ]
+        matches = re.findall("Final answer: (.*)", sample['response_clean'])
+        if matches:
+            answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
+            y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
+            return {
+                "prompt": prompt,
+                "y": y,
+            }
+        else:
+            return {
+                "prompt": prompt,
+                "y": 0,
+            }
+        
+    def apply_prompt_template_test(sample):
+        prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+            Finally, please provide your confidence (0%-100%) to your answer.
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Final answer: John Milton
+            Confidence: 90%
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Final answer: France
+            Confidence: 100%
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Final answer: NONE
+            Confidence: 0%"""},
+            {"role": "user", "content":  f"Question: {sample['question']}"},
+            {"role": "assistant", "content": f"Response:"},
+            ]
+        return {
+            "prompt": json.dumps(prompt),
+            "correct_answer": json.dumps(sample['correct_answer']),
+        }
+
+    if split == 'test':
+        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    else:
+        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+
+    def tokenize_add_label(sample):
+        # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
+        prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
+        prompt = torch.cat((prompt, torch.tensor([220])))
+        sample = {
+            "input_ids": prompt,
+            "attention_mask" : [1] * (len(prompt)),
+            # 'conf_index': torch.tensor([len(prompt) - 1]),
+            'label': prompt,
+            'y': [sample['y']]
+            }
+
+        return sample
+    if split == 'test':
+        dataset = dataset
+    else:
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    return dataset
+
+
+def get_trivia_qa_question(tokenizer, split, generate="vanilla"):
+    if split == 'train':
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_multi.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+    elif split == 'val':
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
+    else:
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': """You will be asked trivia questions. Please respond to the best of your ability.
@@ -158,11 +275,10 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
 
 
 
-
 def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')

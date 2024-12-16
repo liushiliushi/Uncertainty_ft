@@ -401,8 +401,9 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
     # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
+    # test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
@@ -435,7 +436,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
     }
@@ -704,7 +705,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
     return results
 
-def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
+def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
     """
     Trains the model on the given dataloader
 
@@ -787,11 +788,6 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader):
-                    if train_config.enable_fsdp:
-                        dummy_text = "Hello world!"
-                        dummy_batch = tokenizer(dummy_text, return_tensors="pt").to(model.device)
-                        with torch.no_grad():
-                            _ = model(**dummy_batch)
 
 
                     total_train_steps += 1
@@ -973,7 +969,7 @@ def train_token(model, train_dataloader,eval_dataloader, test_dataloader, tokeni
                
                 if train_config.enable_fsdp:
                     dist.barrier()
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
+            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_dynamic(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
             checkpoint_end_time = time.perf_counter() - checkpoint_start_time
             checkpoint_times.append(checkpoint_end_time)
             if eval_epoch_loss < best_val_loss:
@@ -1053,7 +1049,7 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
         "max_new_tokens": 100,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -1151,7 +1147,7 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
 
-def evaluation_token(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
+def evaluation_dynamic(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
     """
     Evaluates the model on the given dataloader
 
@@ -1299,7 +1295,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
         "max_new_tokens": 200,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -1337,6 +1333,106 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     number = len(all_y)
     print(f"Number: {number}")
     val_metrics = compute_conf_metrics(all_y, test_probs)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+
+    # If there's more than one CUDA device, reduce evaluation loss across all devices
+    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+
+    if wandb_run:
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({
+                        'test/ece': ece_score,
+                        'test/roc_auc': roc_auc_score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score
+
+def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run):
+    """
+    Evaluates the model on the given dataloader
+
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    if train_config.enable_fsdp:
+        world_size = int(os.environ["WORLD_SIZE"])
+    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
+    
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 200,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0.7,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+        "output_scores": True,
+        "return_dict_in_generate": True
+    }
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
+    with MemoryTrace() as memtrace:
+        id = 0
+        wan_table = wandb.Table(columns=['response','confidence', 'y'])
+        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
+            prompts = [json.loads(item) for item in batch["prompt"]]
+            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+            # stop when the maximum number of eval steps is reached
+            
+
+            with torch.no_grad():
+                # Forward pass and compute loss
+                output = model.generate(query_tensors, **generation_kwargs) 
+                responses = output.sequences
+                logits = output.scores
+                batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
+                try:
+                    prompts_new, confidence_stage1, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+
+                except:
+                    continue
+                query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
+                white_spaces = torch.full((len(prompts_new), 1), 220)
+                attention = torch.full((len(prompts_new), 1), 1)
+                query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
+                query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
+                y = torch.tensor(y).view(-1, 1).to(model.device)
+                with torch.no_grad():
+                    logits = model(**query_tensors_new).logits
+            num_token = logits[:,-1,:]
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            test_probs.extend(probs.detach().cpu().numpy().tolist())
+            test_probs_stage1.extend(confidence_stage1)
+            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
+            # for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
+            #     wan_table.add_data(response, confidence, y_item)        
+
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    # if wandb_run:
+    #     if not train_config.enable_fsdp or rank==0:
+    #         wandb_run.log({"Testing_samples": wan_table})
+    number = len(all_y)
+    print(f"Number: {number}")
+    print("Stage1:")
+    val_metrics_stage1 = compute_conf_metrics(all_y, test_probs_stage1)
+    print("Stage2:")
+    val_metrics = compute_conf_metrics(all_y, test_probs)
+    
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
 
