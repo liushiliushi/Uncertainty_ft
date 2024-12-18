@@ -219,7 +219,7 @@ def main(**kwargs):
         tokenizer,
         train_config.dataset,
         'train',
-        # train_config.generate
+        train_config.on_policy
     ).shuffle(seed=42)
     # dataset_train = dataset_train[:4]
     if not train_config.enable_fsdp or rank == 0:
@@ -229,13 +229,13 @@ def main(**kwargs):
         tokenizer,
         train_config.dataset,
         'val',
-        # train_config.generate
+        train_config.on_policy
     )
     dataset_test = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
         'test',
-        # train_config.generate
+        train_config.on_policy
     )
 
     if not train_config.enable_fsdp or rank == 0:
@@ -247,14 +247,24 @@ def main(**kwargs):
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train")
 
     # Create DataLoaders for the training and validation dataset
-    train_dataloader = torch.utils.data.DataLoader(
-        dataset_train,
-        num_workers= 0,
-        # num_workers=train_config.num_workers_dataloader,
-        pin_memory=True,
-        #batch_sampler=train_dl_kwargs['batch_sampler']
-        **train_dl_kwargs,
-    )
+    if train_config.on_policy == True:
+        train_dataloader = torch.utils.data.DataLoader(
+            dataset_train,
+            num_workers= 0,
+            # num_workers=train_config.num_workers_dataloader,
+            pin_memory=True,
+            batch_sampler=train_dl_kwargs['batch_sampler']
+            # **train_dl_kwargs,
+        )
+    else:
+        train_dataloader = torch.utils.data.DataLoader(
+            dataset_train,
+            num_workers= 0,
+            # num_workers=train_config.num_workers_dataloader,
+            pin_memory=True,
+            #batch_sampler=train_dl_kwargs['batch_sampler']
+            **train_dl_kwargs,
+        )
 
     test_dataloader = torch.utils.data.DataLoader(
         dataset_test,
@@ -270,14 +280,13 @@ def main(**kwargs):
             dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
 
         val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
-
         eval_dataloader = torch.utils.data.DataLoader(
-            dataset_val,
-            num_workers=train_config.num_workers_dataloader,
-            pin_memory=True,
-            **val_dl_kwargs,
-            # batch_sampler = val_dl_kwargs['batch_sampler'],
-        )
+                dataset_val,
+                num_workers=train_config.num_workers_dataloader,
+                pin_memory=True,
+                **val_dl_kwargs,
+                # batch_sampler = val_dl_kwargs['batch_sampler'],
+            )
         if len(eval_dataloader) == 0:
             raise ValueError(
                 "The eval set size is too small for dataloader to load even one batch. Please increase the size of eval set.")
@@ -302,21 +311,38 @@ def main(**kwargs):
         )
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     # Start the training process
-    results = train_chat(
-        model,
-        train_dataloader,
-        eval_dataloader,
-        test_dataloader,
-        tokenizer,
-        optimizer,
-        scheduler,
-        train_config.gradient_accumulation_steps,
-        train_config,
-        fsdp_config if train_config.enable_fsdp else None,
-        local_rank if train_config.enable_fsdp else None,
-        rank if train_config.enable_fsdp else None,
-        wandb_run,
-    )
+    if train_config.on_policy == True:
+        results = train_dynamic(
+            model,
+            train_dataloader,
+            eval_dataloader,
+            test_dataloader,
+            tokenizer,
+            optimizer,
+            scheduler,
+            train_config.gradient_accumulation_steps,
+            train_config,
+            fsdp_config if train_config.enable_fsdp else None,
+            local_rank if train_config.enable_fsdp else None,
+            rank if train_config.enable_fsdp else None,
+            wandb_run,
+        )
+    else:
+        results = train_chat(
+            model,
+            train_dataloader,
+            eval_dataloader,
+            test_dataloader,
+            tokenizer,
+            optimizer,
+            scheduler,
+            train_config.gradient_accumulation_steps,
+            train_config,
+            fsdp_config if train_config.enable_fsdp else None,
+            local_rank if train_config.enable_fsdp else None,
+            rank if train_config.enable_fsdp else None,
+            wandb_run,
+        )
     if not train_config.enable_fsdp or rank == 0:
         [print(f'Key: {k}, Value: {v}') for k, v in results.items()]
         if train_config.use_wandb:

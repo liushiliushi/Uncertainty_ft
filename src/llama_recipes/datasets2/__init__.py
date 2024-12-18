@@ -26,3 +26,16 @@ DATASET_PREPROC = {
     "object_cou": get_object_cou2,
     "trivia_qa": get_trivia_qa
 }
+
+DATASET_PREPROC_dynamic = {
+    "alpaca_dataset": partial(get_alpaca_dataset),
+    "grammar_dataset": get_grammar_dataset,
+    "samsum_dataset": get_samsum_dataset,
+    "custom_dataset": get_custom_dataset,
+    "llamaguard_toxicchat_dataset": get_llamaguard_toxicchat_dataset,
+    "gsm8k_dataset": get_gsm8k_dataset2,
+    "professional_law": get_professional_law,
+    "strategyqa": get_strategyqa,
+    "object_cou": get_object_cou2,
+    "trivia_qa": get_trivia_qa_dynamic
+}
