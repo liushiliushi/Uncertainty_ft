@@ -51,19 +51,19 @@ def normalize_answer(s):
 def get_trivia_qa(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4010]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
-        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4010]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
 
@@ -278,15 +278,15 @@ def get_trivia_qa_question(tokenizer, split, generate="vanilla"):
 def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
     else:
-        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
+        path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
 
@@ -363,7 +363,10 @@ def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
     #     dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
     # else:
     #     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    if split == 'val':
+        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+    else:
+        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
@@ -373,6 +376,7 @@ def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
             "input_ids": prompt,
             "attention_mask" : [1] * (len(prompt)),
             # 'conf_index': torch.tensor([len(prompt) - 1]),
+            'label': prompt,
             'y': [sample['y']]
             }
 
@@ -381,6 +385,8 @@ def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
     #     dataset = dataset
     # else:
     #     dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    if split == 'val':
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
 
     return dataset
 

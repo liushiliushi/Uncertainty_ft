@@ -402,8 +402,10 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         world_size = int(os.environ["WORLD_SIZE"])
 
     # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
-    # test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
+    print("==============original evaluation================")
+    eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+    print("==============original test2stage================")
+    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
@@ -679,7 +681,10 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         if train_config.save_metrics:
             save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
 
-    test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
+
+
+    print("==============finetuned test2stage================")
+    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
     avg_epoch_time = sum(epoch_times)/ len(epoch_times)
     avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
     avg_train_prep = sum(train_prep)/len(train_prep)
@@ -734,6 +739,10 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
     # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
     # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
+    print("==============original evaluation================")
+    eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+    print("==============original test2stage================")
+    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
@@ -765,7 +774,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
         "max_new_tokens": 100,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -969,7 +978,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                
                 if train_config.enable_fsdp:
                     dist.barrier()
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_dynamic(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
+            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
             checkpoint_end_time = time.perf_counter() - checkpoint_start_time
             checkpoint_times.append(checkpoint_end_time)
             if eval_epoch_loss < best_val_loss:
@@ -991,7 +1000,9 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
         if train_config.save_metrics:
             save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
 
-    test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
+    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
+    print("==============finetuned test2stage================")
+    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
     avg_epoch_time = sum(epoch_times)/ len(epoch_times)
     avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
     avg_train_prep = sum(train_prep)/len(train_prep)
@@ -1066,7 +1077,7 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
                     if is_xpu_available():
                         batch[key] = batch[key].to('xpu:0')
                     else:
-                        batch[key] = batch[key].to('cuda:0')
+                        batch[key] = batch[key].to(model.device)
             with torch.no_grad():
                 output = model(**batch)
                 logits = output.logits
@@ -1177,7 +1188,7 @@ def evaluation_dynamic(model,train_config, eval_dataloader, local_rank, tokenize
         "max_new_tokens": 100,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -1295,7 +1306,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
         "max_new_tokens": 200,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -1376,7 +1387,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         "max_new_tokens": 200,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,

@@ -29,6 +29,7 @@ class train_config:
     mixed_precision: bool=True
     val_batch_size: int=8
     dataset = "gsm8k_dataset"
+    on_policy = False
     peft_method: str = "lora" # None, llama_adapter (Caution: llama_adapter is currently not supported with FSDP)
     use_peft: bool=False # use parameter efficient fine tuning
     from_peft_checkpoint: str="" # if not empty and use_peft=True, will load the peft checkpoint and resume the fine-tuning on that checkpoint
