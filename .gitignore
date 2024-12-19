@@ -29,7 +29,6 @@ dataset/trivia_qa/*.jsonl
 dataset/trivia_qa/tqa_validation_mistral_v1_small.jsonl
 dataset/truthful_qa/truthful_qa_test_mistral_generator_mistral_evaluator.jsonl
 dataset/trivia_qa/tqa_test.jsonl
-dataset/trivia_qa/tqa_train_single.jsonl
 src/llama_recipes/answer_trivia_1205_train.log
 src/llama_recipes/answer_trivia_1206_train.log
 dataset/data/auxiliary_train/race.csv
@@ -52,3 +51,4 @@ dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a390854
 dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a3908546c6fd5b73a660e0f8ff173c2f/trivia_qa-test.arrow
 dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a3908546c6fd5b73a660e0f8ff173c2f/trivia_qa-train.arrow
 dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a3908546c6fd5b73a660e0f8ff173c2f/trivia_qa-validation.arrow
+train_response2.jsonl
