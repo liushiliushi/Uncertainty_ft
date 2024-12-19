@@ -54,3 +54,4 @@ class train_config:
     loss_type: str = 'sot' # 'brier' or 'sot'
     get_train_response: bool = False
     train_response_dir: str = "../dataset/grade_school_math/data/test_response.jsonl"
+    test_original_model = False

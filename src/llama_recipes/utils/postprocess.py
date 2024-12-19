@@ -81,7 +81,6 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                     if matches1 and matches2 and (matches2[-1] != ''):
                         out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
                         confidences_None.append(matches2[-1])
-                        print(f"{matches1[-1]} {extract_number(matches1[-1])}")
                         if extract_number(matches1[-1]) == json.loads(correct_answers[id]):
                             y.append(1)
                             y_None.append(1)
