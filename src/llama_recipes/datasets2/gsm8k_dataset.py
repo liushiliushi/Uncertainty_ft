@@ -17,14 +17,19 @@ ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 INVALID_ANS = "[invalid]"
 
 
-def extract_answer(completion):
-    match = ANS_RE.search(completion)
+def extract_number(text):
+    # 去掉文本中的逗号
+    text = text.replace(',', '')
+
+    # 使用正则表达式提取数字（支持小数和负号）
+    match = re.search(r'[-+]?\d*\.\d+|\d+', text)
+
     if match:
-        match_str = match.group(1).strip()
-        match_str = match_str.replace(",", "")
-        return match_str
+        # 提取到的数值并返回
+        return float(match.group(0))
     else:
-        return INVALID_ANS
+        # 如果没有找到数字，返回 None
+        return None
 
 def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
     if split == 'train':
@@ -68,20 +73,19 @@ def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
 
 def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
     if split == 'train':
-        path = '../dataset/grade_school_math/data/test_negllm.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+    elif split == 'val':
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
     else:
         # path = '../dataset/grade_school_math/data/test_negllm.jsonl'
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
-        path = '../dataset/grade_school_math/data/test_negllm.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        path = '../dataset/grade_school_math/data/test_response2.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
 
 
     def apply_prompt_template(sample):
-        if sample['label'] == 1:
-            answer = sample['real_answer']
-        else:
-            answer = sample['neg_llm2']
         prompt = [{'role': 'system', 'content': """You will be asked math problems. Please respond to the best of your ability.
                    Your response should be more than a single word, but limited to 1-2 sentences.
                    Then please extract a single answer from the your response. If no answer is present, please write "NONE".
@@ -107,10 +111,19 @@ def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
                   {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
                   ]
 
-        return {
-            "prompt": json.dumps(prompt),
-            "y": sample['label'],
-        }
+        matches = re.findall("Final answer: (.*)", sample['response_clean'])
+        if matches:
+            answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
+            y  = 1 if extract_number(answer) == float(sample['correct_answer']) else 0
+            return {
+                "prompt": prompt,
+                "y": y,
+            }
+        else:
+            return {
+                "prompt": prompt,
+                "y": 0,
+            }
 
     def apply_prompt_template_test(sample):
         prompt = [{'role': 'system', 'content': """You will be asked math problems. Please respond to the best of your ability.
@@ -140,13 +153,13 @@ def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
 
         return {
             "prompt": json.dumps(prompt),
-            "correct_answer": sample['real_answer'],
+            "correct_answer": sample['correct_answer'],
         }
 
     if split == 'test':
         dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
     else:
-        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
@@ -161,11 +174,11 @@ def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
             }
 
         return sample
-    # if split == 'test':
-    #     dataset = dataset
-    # else:
-    #     dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
-    dataset= dataset
+    if split == 'test':
+        dataset = dataset
+    else:
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+
     return dataset
 
 

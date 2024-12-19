@@ -89,7 +89,7 @@ def main(args):
         "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.7,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": pad_token,
     }
