@@ -52,3 +52,5 @@ class train_config:
     profiler_dir: str = "PATH/to/save/profiler/results" # will be used if using profiler
     generate: str = "vanilla"
     loss_type: str = 'sot' # 'brier' or 'sot'
+    get_train_response: bool = False
+    train_response_dir: str = "../dataset/grade_school_math/data/test_response.jsonl"

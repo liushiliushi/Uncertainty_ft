@@ -740,7 +740,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
     # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
     # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
     print("==============original evaluation================")
-    eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
     print("==============original test2stage================")
     test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
@@ -1409,21 +1409,30 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
                 # Forward pass and compute loss
                 output = model.generate(query_tensors, **generation_kwargs) 
                 responses = output.sequences
-                logits = output.scores
+                # logits = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 try:
-                    prompts_new, confidence_stage1, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+                    prompts_new, out_responses, questions, confidence_stage1, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
 
                 except:
                     continue
+                if train_config.get_train_response == True:
+                    output_dir = train_config.train_response_dir
+                    with open(output_dir, "a") as f1:
+                        for query_ids in range(len(out_responses)):
+                            json_line = json.dumps({"question": questions[query_ids],
+                                                                        "response_clean": out_responses[query_ids],
+                                                                        "confidence": confidence_stage1[query_ids],
+                                                                        "correct_answer": batch['correct_answer'][query_ids]})
+                            f1.write(json_line + "\n")
+
                 query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
                 white_spaces = torch.full((len(prompts_new), 1), 220)
                 attention = torch.full((len(prompts_new), 1), 1)
                 query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
                 query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
                 y = torch.tensor(y).view(-1, 1).to(model.device)
-                with torch.no_grad():
-                    logits = model(**query_tensors_new).logits
+                logits = model(**query_tensors_new).logits
             num_token = logits[:,-1,:]
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             test_probs.extend(probs.detach().cpu().numpy().tolist())
@@ -1456,8 +1465,10 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
     if wandb_run:
         if not train_config.enable_fsdp or rank==0:
             wandb_run.log({
-                        'test/ece': ece_score,
-                        'test/roc_auc': roc_auc_score,
+                        'test/ece_stage1': ece_score,
+                        'test/roc_auc_stage1': roc_auc_score,
+                        'test/ece_stage2': ece_score,
+                        'test/roc_auc_stage2': roc_auc_score,
                     }, commit=False)
 
     return ece_score, roc_auc_score
