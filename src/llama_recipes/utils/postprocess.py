@@ -40,8 +40,9 @@ def extract_number(text):
         return None
 
 def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa'):
-    if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
-        out_responses, y_None, y, out_confidences, confidences_None = [], [], [], [], []
+    out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions = [], [], [], [], [], [], []
+
+    if dataset_name == "trivia_qa" or dataset_name == "truthful_qa":
         id = 0
         for prompt, answer in zip(prompts, answers): 
             prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
@@ -68,7 +69,6 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
 
             id += 1
     elif dataset_name == "gsm8k_dataset":
-        out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions = [], [], [], [], [], [], []
         id = 0
         for prompt, answer in zip(prompts, answers):
             prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
