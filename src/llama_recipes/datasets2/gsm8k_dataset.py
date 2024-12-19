@@ -71,18 +71,18 @@ def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
     return dataset
 
 
-def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
+def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
     if split == 'train':
         path = '../dataset/grade_school_math/data/train_response2.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:5000]')
     elif split == 'val':
         path = '../dataset/grade_school_math/data/train_response2.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[5000:]')
     else:
         # path = '../dataset/grade_school_math/data/test_negllm.jsonl'
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
-        path = '../dataset/grade_school_math/data/test_response2.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
+        dataset = datasets.load_dataset('json', data_files=path, split='train[5000:]')
 
 
     def apply_prompt_template(sample):
@@ -156,10 +156,16 @@ def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
             "correct_answer": sample['correct_answer'],
         }
 
-    if split == 'test':
-        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     else:
-        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+        if split == 'val':
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
@@ -174,11 +180,16 @@ def get_gsm8k_dataset2(tokenizer, split, generate='vanilla'):
             }
 
         return sample
-    if split == 'test':
-        dataset = dataset
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset
+        else:
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     else:
-        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
-
+        if split == 'val':
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    
     return dataset
+
 
 

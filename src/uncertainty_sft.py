@@ -229,7 +229,7 @@ def main(**kwargs):
         tokenizer,
         train_config.dataset,
         'val',
-        train_config.on_policy
+        train_config.on_policy 
     )
     dataset_test = get_preprocessed_dataset2(
         tokenizer,

@@ -48,22 +48,22 @@ def normalize_answer(s):
 
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
-def get_trivia_qa(tokenizer, split, generate="vanilla"):
+def get_trivia_qa(tokenizer, split, on_policy = False):
     if split == 'train':
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:4000]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4010]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4010]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
 
@@ -135,11 +135,17 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             "prompt": json.dumps(prompt),
             "correct_answer": json.dumps(sample['correct_answer']),
         }
-
-    if split == 'test':
-        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     else:
-        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+        if split == 'val':
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+
 
     def tokenize_add_label(sample):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
@@ -154,10 +160,14 @@ def get_trivia_qa(tokenizer, split, generate="vanilla"):
             }
 
         return sample
-    if split == 'test':
-        dataset = dataset
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset
+        else:
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     else:
-        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+        if split == 'val':
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     return dataset
 
 
@@ -359,10 +369,6 @@ def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
             "correct_answer": json.dumps(sample['correct_answer']),
         }
 
-    # if split == 'test':
-    #     dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
-    # else:
-    #     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     if split == 'val':
         dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     else:
@@ -381,10 +387,6 @@ def get_trivia_qa_dynamic(tokenizer, split, generate="vanilla"):
             }
 
         return sample
-    # if split == 'test':
-    #     dataset = dataset
-    # else:
-    #     dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     if split == 'val':
         dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
 

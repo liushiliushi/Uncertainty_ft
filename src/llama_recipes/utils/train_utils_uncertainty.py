@@ -401,12 +401,11 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-    print("==============original evaluation================")
-    eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-    print("==============original test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
-    # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
+    if train_config.test_original_model == True:
+        print("==============original evaluation================")
+        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+        print("==============original test2stage================")
+        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
@@ -736,13 +735,11 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
-    # print(f"test_ece:{test_ece} test_auroc:{test_auroc}")
-    print("==============original evaluation================")
-    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-    print("==============original test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
+    if train_config.test_original_model == True:
+        print("==============original evaluation================")
+        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+        print("==============original test2stage================")
+        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
@@ -809,7 +806,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                     logits = output.scores
                     batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                     try:
-                        prompts_new, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+                        prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                     except:
                         continue
                     query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
@@ -1207,7 +1204,7 @@ def evaluation_dynamic(model,train_config, eval_dataloader, local_rank, tokenize
             logits = output.scores
             batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
             try:
-                prompts_new, confidences, y, y_None, confidences_None = confidence_replace(prompts, batch_responses, batch['correct_answer'])
+                prompts_new, _, _, confidences, y, y_None, confidences_None = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
             except:
                 continue
             all_y.extend(y)
@@ -1329,7 +1326,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
                 logits = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 try:
-                    confidences, y, y_unfiltered, confidence_unfiltered = postprocess_extract(prompts, batch_responses, batch['correct_answer'],)
+                    _,_,_,confidences, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 except:
                     continue
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):

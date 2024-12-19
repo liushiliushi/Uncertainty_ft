@@ -30,13 +30,8 @@ def get_preprocessed_dataset(
 def get_preprocessed_dataset2(
     tokenizer, dataset, split, on_policy
 ) -> torch.utils.data.Dataset:
-    if on_policy == True:
-        return DATASET_PREPROC_dynamic[dataset](
-            tokenizer, split, 'llm'
-        )
-    else:
-        return DATASET_PREPROC[dataset](
-            tokenizer, split, 'llm'
+    return DATASET_PREPROC[dataset](
+            tokenizer, split, on_policy
         )
 
 
