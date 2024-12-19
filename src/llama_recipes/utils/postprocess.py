@@ -25,6 +25,20 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
 
+def extract_number(text):
+    # 去掉文本中的逗号
+    text = text.replace(',', '')
+
+    # 使用正则表达式提取数字（支持小数和负号）
+    match = re.search(r'[-+]?\d*\.\d+|\d+', text)
+
+    if match:
+        # 提取到的数值并返回
+        return float(match.group(0))
+    else:
+        # 如果没有找到数字，返回 None
+        return None
+
 def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa'):
     if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
         out_responses, y_None, y, out_confidences, confidences_None = [], [], [], [], []
@@ -53,9 +67,40 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         confidences_None.append(None)
 
             id += 1
+    elif dataset_name == "gsm8k_dataset":
+        out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions = [], [], [], [], [], [], []
+        id = 0
+        for prompt, answer in zip(prompts, answers):
+            prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
+            question_blocks = re.split("(Question:)", answer)
+            for qblock in question_blocks:
+                if prompt_question[:-2] in qblock:
+                    qblock = re.sub("</s>", "", qblock)
+                    matches1 = re.findall("Final answer: (.*)", qblock)
+                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    if matches1 and matches2 and (matches2[-1] != ''):
+                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
+                        confidences_None.append(matches2[-1])
+                        print(f"{matches1[-1]} {extract_number(matches1[-1])}")
+                        if extract_number(matches1[-1]) == json.loads(correct_answers[id]):
+                            y.append(1)
+                            y_None.append(1)
+                        else:
+                            y.append(0)
+                            y_None.append(0)
+                        out_response = re.sub(r"(Confidence:)(.*)", r"\1", answer)
+                        out_response_clean = re.findall(r"Response:\s*((?:.|\n)*?)(?:\n\n|$)", qblock, re.DOTALL)[-1]
+                        out_response_cleans.append(re.sub(r"(Confidence:)(.*)", r"\1", out_response_clean))
+                        out_responses.append(out_response)
+                        questions.append(prompt_question)
+                    else:
+                        y_None.append(None)
+                        confidences_None.append(None)
+
+            id += 1
     out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
 
-    return out_responses, out_confidences, y, y_None, confidences_None 
+    return out_responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None
 
 def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_qa'):
     if dataset_name == "trivia_qa" or dataset_name == "truthful_qa": 
