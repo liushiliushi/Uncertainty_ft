@@ -26,7 +26,7 @@ from llama_recipes.policies import fpSixteen,bfSixteen, get_llama_wrapper
 from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
-from llama_recipes.utils.compute_metrics import compute_conf_metrics
+from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
 from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
@@ -403,9 +403,9 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
     if train_config.test_original_model == True:
         print("==============original evaluation================")
-        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
+        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = True)
         print("==============original test2stage================")
-        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
+        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original = True)
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
@@ -808,6 +808,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                     try:
                         prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                     except:
+                        print("Error")
                         continue
                     query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
                     white_spaces = torch.full((len(prompts_new), 1), 220)
@@ -884,6 +885,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
 
                     if train_config.save_metrics:
                         save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
+                    torch.cuda.empty_cache()
  
 
         epoch_end_time = time.perf_counter()-epoch_start_time
@@ -1025,7 +1027,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
 
     return results
 
-def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
+def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = False):
     """
     Evaluates the model on the given dataloader
 
@@ -1113,6 +1115,9 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     val_metrics = compute_conf_metrics(all_y, eval_probs)
+    if train_config.use_wandb:
+        plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
+        plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original)
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
 
@@ -1359,7 +1364,7 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
 
     return ece_score, roc_auc_score
 
-def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run):
+def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
     """
     Evaluates the model on the given dataloader
 
@@ -1384,7 +1389,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         "max_new_tokens": 200,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.1,
+        "temperature": 0.0001,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
@@ -1406,12 +1411,14 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
                 # Forward pass and compute loss
                 output = model.generate(query_tensors, **generation_kwargs) 
                 responses = output.sequences
-                # logits = output.scores
+                # logits2 = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 try:
                     prompts_new, out_responses, questions, confidence_stage1, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
 
                 except:
+                    continue
+                if len(prompts_new) == 0:
                     continue
                 if train_config.get_train_response == True:
                     output_dir = train_config.train_response_dir
@@ -1432,6 +1439,8 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
                 logits = model(**query_tensors_new).logits
             num_token = logits[:,-1,:]
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            # num_token2 = logits2[:,-1,:]
+            # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
             test_probs.extend(probs.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
@@ -1447,8 +1456,15 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
     print(f"Number: {number}")
     print("Stage1:")
     val_metrics_stage1 = compute_conf_metrics(all_y, test_probs_stage1)
+    if train_config.use_wandb:
+        plot_confidence_histogram(all_y, test_probs_stage1, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
+        plot_ece_diagram(all_y, test_probs_stage1, "stage1", wandb_run, original)
+
     print("Stage2:")
     val_metrics = compute_conf_metrics(all_y, test_probs)
+    if train_config.use_wandb:
+        plot_confidence_histogram(all_y, test_probs, "stage2", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
+        plot_ece_diagram(all_y, test_probs, "stage2", wandb_run,original)
     
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']

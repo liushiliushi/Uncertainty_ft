@@ -56,14 +56,14 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
         path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[4000:4100]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
 

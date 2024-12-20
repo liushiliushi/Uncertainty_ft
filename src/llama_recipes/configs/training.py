@@ -12,6 +12,7 @@ class train_config:
     low_cpu_fsdp: bool=False # saves cpu memory by loading pretrained model on rank0 only
     run_validation: bool=True
     batch_size_training: int=8
+    batch_size_testing: int=8
     batching_strategy: str="padding" #alternative: padding
     context_length: int=1024
     gradient_accumulation_steps: int=1
