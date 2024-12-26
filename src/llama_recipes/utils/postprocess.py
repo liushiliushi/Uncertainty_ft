@@ -61,8 +61,9 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         else:
                             y.append(0)
                             y_None.append(0)
-                        out_response = re.sub(r"(Confidence:)(.*)", r"\1", answer)
-                        out_responses.append(out_response)
+                        qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
+                        prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
+                        out_responses.append(prompt)
                     else:
                         y_None.append(None)
                         confidences_None.append(None)
@@ -87,11 +88,12 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         else:
                             y.append(0)
                             y_None.append(0)
-                        out_response = re.sub(r"(Confidence:)(.*)", r"\1", answer)
-                        out_response_clean = re.findall(r"Response:\s*((?:.|\n)*?)(?:\n\n|$)", qblock, re.DOTALL)[-1]
-                        out_response_cleans.append(re.sub(r"(Confidence:)(.*)", r"\1", out_response_clean))
-                        out_responses.append(out_response)
+                        qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
+                        prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
+                        # out_response_clean = re.findall(r"Response:\s*((?:.|\n)*?)(?:\n\n|$)", qblock, re.DOTALL)[-1]
+                        # out_response_cleans.append(re.sub(r"(Confidence:)(.*)", r"\1", out_response_clean))
                         questions.append(prompt_question)
+                        out_responses.append(prompt)
                     else:
                         y_None.append(None)
                         confidences_None.append(None)
