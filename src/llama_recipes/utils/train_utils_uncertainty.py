@@ -437,7 +437,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0,
+        "temperature": 0.1,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
     }
@@ -450,14 +450,12 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         if max_steps_reached:
             break
         epoch_start_time = time.perf_counter()
-        # TODO:with MemoryTrace() as memtrace:  # track the memory usage
-        if True:
+        with MemoryTrace() as memtrace:  # track the memory usage
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            # with profile(train_config,local_rank) as profile_context:
-            if True:
+            with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader): # TODO
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
@@ -488,13 +486,6 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                         output = model(**batch)
                         logits = output.logits
                         loss_con = output.loss
-                        # responses = model.generate(batch['input_ids'], **generation_kwargs) 
-                        # batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-
-
-                    # decoded_indices = torch.argmax(logits, dim=-1)
-                    # decoded_indices = decoded_indices.tolist()
-                    # decoded_texts = [tokenizer.decode(indices[-1], skip_special_tokens=True) for indices in decoded_indices]
 
                     num_token = logits[:,-1,:] # get the logit of the confidence token
                     del logits
@@ -794,8 +785,6 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader):
-
-
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
                     prompts = [json.loads(item) for item in batch["prompt"]]
@@ -810,14 +799,17 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                     except:
                         print("Error")
                         continue
-                    query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
-                    white_spaces = torch.full((len(prompts_new), 1), 220)
-                    attention = torch.full((len(prompts_new), 1), 1)
-                    query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                    query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
+                    if len(prompts_new) == 0:
+                        continue
+                    query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                    white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
+                    query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
+                    # attention = torch.full((len(prompts_new), 1), 1)
+                    # query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
+                    # query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
                     y = torch.tensor(y).view(-1, 1).to(model.device)
                     with autocast():
-                        logits = model(**query_tensors_new).logits
+                        logits = model(query_tensors_new).logits
                 
                     num_token = logits[:, -1, :]
                     scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(num_token.shape[0], 101).to(model.device)
@@ -1386,11 +1378,11 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
 
     generation_kwargs = {
         "min_length": 1,
-        "max_new_tokens": 200,
+        "max_new_tokens": 200, # 200
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.0001,
-        "do_sample": True,
+        "temperature": 0.1,
+        "do_sample":True,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
         "return_dict_in_generate": True
@@ -1401,7 +1393,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
     with MemoryTrace() as memtrace:
         id = 0
         wan_table = wandb.Table(columns=['response','confidence', 'y'])
-        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
+        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
             prompts = [json.loads(item) for item in batch["prompt"]]
             query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
@@ -1410,33 +1402,22 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             with torch.no_grad():
                 # Forward pass and compute loss
                 output = model.generate(query_tensors, **generation_kwargs) 
+                # logits = model(query_tensors).logits
                 responses = output.sequences
                 # logits2 = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 try:
-                    prompts_new, out_responses, questions, confidence_stage1, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-
+                    prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 except:
                     continue
                 if len(prompts_new) == 0:
                     continue
-                if train_config.get_train_response == True:
-                    output_dir = train_config.train_response_dir
-                    with open(output_dir, "a") as f1:
-                        for query_ids in range(len(out_responses)):
-                            json_line = json.dumps({"question": questions[query_ids],
-                                                                        "response_clean": out_responses[query_ids],
-                                                                        "confidence": confidence_stage1[query_ids],
-                                                                        "correct_answer": batch['correct_answer'][query_ids]})
-                            f1.write(json_line + "\n")
 
-                query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
-                white_spaces = torch.full((len(prompts_new), 1), 220)
-                attention = torch.full((len(prompts_new), 1), 1)
-                query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
+                query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
+                query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
                 y = torch.tensor(y).view(-1, 1).to(model.device)
-                logits = model(**query_tensors_new).logits
+                logits = model(query_tensors_new).logits
             num_token = logits[:,-1,:]
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             # num_token2 = logits2[:,-1,:]
@@ -1444,14 +1425,18 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             test_probs.extend(probs.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
-            # for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
-            #     wan_table.add_data(response, confidence, y_item)        
+            for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
+                wan_table.add_data(response, confidence, y_item)        
 
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
-    # if wandb_run:
-    #     if not train_config.enable_fsdp or rank==0:
-    #         wandb_run.log({"Testing_samples": wan_table})
+    if wandb_run:
+        if not train_config.enable_fsdp or rank==0:
+            if original == True:
+                wandb_run.log({"Testing_samples/original": wan_table})
+            else:
+                wandb_run.log({"Testing_samples/fine-tuned": wan_table})
+
     number = len(all_y)
     print(f"Number: {number}")
     print("Stage1:")

@@ -73,15 +73,15 @@ def get_gsm8k_dataset(tokenizer, split, generate="vanilla"):
 
 def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
     if split == 'train':
-        path = '../dataset/grade_school_math/data/train_response4.jsonl'
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        path = '../dataset/grade_school_math/data/train_response4.jsonl'
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[5000:5100]')
     else:
         # path = '../dataset/grade_school_math/data/test_negllm.jsonl'
         # dataset = datasets.load_dataset('json', data_files=path, split='train')
-        path = '../dataset/grade_school_math/data/train_response4.jsonl'
+        path = '../dataset/grade_school_math/data/train_response2.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[5000:5100]')
 
 
