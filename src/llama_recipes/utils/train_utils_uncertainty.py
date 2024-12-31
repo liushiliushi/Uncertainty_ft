@@ -1374,7 +1374,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
 
     generation_kwargs = {
         "min_length": 1,
-        "max_new_tokens": 200, # 200
+        "max_new_tokens": 200, 
         "top_k": 0.0,
         "top_p": 1.0,
         "temperature": train_config.temperature,
@@ -1397,23 +1397,28 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             
 
             with torch.no_grad():
-                # Forward pass and compute loss
                 output = model.generate(**query_tensors, **generation_kwargs, ) 
-                # logits = model(query_tensors).logits
                 responses = output.sequences
-                # logits2 = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                 prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 if len(prompts_new) == 0:
                     continue
+                y = torch.tensor(y).view(-1, 1).to(model.device)
 
+                # include attention mask
                 query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
                 white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
                 white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
                 query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
                 query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
-                y = torch.tensor(y).view(-1, 1).to(model.device)
                 logits = model(**query_tensors_new).logits
+
+                # exclude attention mask
+                # query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                # white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
+                # query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
+                # logits = model(query_tensors_new).logits
+
             num_token = logits[:,-1,:]
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             # num_token2 = logits2[:,-1,:]
