@@ -7,6 +7,8 @@ from dataclasses import dataclass
 @dataclass
 class train_config:
     model_name: str="PATH/to/Model"
+    temperature: float=0.1
+    do_sample: bool = True
     tokenizer_name: str=None
     enable_fsdp: bool=False # shards model parameters, optimizer states and gradients across DDP ranks
     low_cpu_fsdp: bool=False # saves cpu memory by loading pretrained model on rank0 only
@@ -40,7 +42,7 @@ class train_config:
     quantization: str = None
     one_gpu: bool = False
     save_model: bool = True
-    merge_peft: bool = True
+    merge_peft: bool = False #True
     dist_checkpoint_root_folder: str="PATH/to/save/FSDP/model" # will be used if using FSDP
     dist_checkpoint_folder: str="fine-tuned" # will be used if using FSDP
     save_optimizer: bool=False # will be used if using FSDP

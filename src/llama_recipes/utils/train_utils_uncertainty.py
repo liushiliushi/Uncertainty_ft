@@ -762,8 +762,8 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
         "max_new_tokens": 100,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample": True,
+        "temperature": train_config.temperature,
+        "do_sample": train_config.do_sample,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
         "return_dict_in_generate": True
@@ -794,11 +794,7 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                     responses = output.sequences
                     logits = output.scores
                     batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                    try:
-                        prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                    except:
-                        print("Error")
-                        continue
+                    prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                     if len(prompts_new) == 0:
                         continue
                     query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
@@ -1381,11 +1377,12 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         "max_new_tokens": 200, # 200
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample":True,
+        "temperature": train_config.temperature,
+        "do_sample": train_config.do_sample,
         "pad_token_id": tokenizer.eos_token_id,
         "output_scores": True,
-        "return_dict_in_generate": True
+        "return_dict_in_generate": True,
+        # "pad_token_id": tokenizer.pad_token_id
     }
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
@@ -1395,35 +1392,36 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         wan_table = wandb.Table(columns=['response','confidence', 'y'])
         for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
             prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
             
 
             with torch.no_grad():
                 # Forward pass and compute loss
-                output = model.generate(query_tensors, **generation_kwargs) 
+                output = model.generate(**query_tensors, **generation_kwargs, ) 
                 # logits = model(query_tensors).logits
                 responses = output.sequences
                 # logits2 = output.scores
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                try:
-                    prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                except:
-                    continue
+                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 if len(prompts_new) == 0:
                     continue
 
-                query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
                 white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
+                white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
+                query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
+                query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
                 y = torch.tensor(y).view(-1, 1).to(model.device)
-                logits = model(query_tensors_new).logits
+                logits = model(**query_tensors_new).logits
             num_token = logits[:,-1,:]
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             # num_token2 = logits2[:,-1,:]
             # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
             test_probs.extend(probs.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
+            print(probs)
+            print(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        
