@@ -92,8 +92,9 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
             {"role": "user", "content":  f"Question: {sample['question']}"},
             {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
             ]
-        matches = re.findall("Final answer: (.*)", sample['response_clean'])
-        if matches:
+        matches1 = re.findall("Final answer: (.*)", sample['response_clean'])
+        matches2 = re.findall("Confidence:", sample['response_clean'])
+        if matches1 and matches2:
             answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
             y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
             return {
@@ -101,6 +102,8 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
                 "y": y,
             }
         else:
+            print("Error")
+            print(sample['response_clean'])
             return {
                 "prompt": prompt,
                 "y": 0,
