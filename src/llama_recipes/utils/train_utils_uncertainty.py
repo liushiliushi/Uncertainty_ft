@@ -788,24 +788,24 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
                     prompts = [json.loads(item) for item in batch["prompt"]]
-                    query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                    query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
                     with torch.no_grad():
-                        output = model.generate(query_tensors, **generation_kwargs) 
+                        output = model.generate(**query_tensors, **generation_kwargs) 
                     responses = output.sequences
                     logits = output.scores
                     batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
                     prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                     if len(prompts_new) == 0:
                         continue
-                    query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
+                    query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt",return_dict=True, continue_final_message=True).to(model.device)
                     white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                    query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
-                    # attention = torch.full((len(prompts_new), 1), 1)
-                    # query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                    # query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
+                    white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
+                    query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
+                    query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
+
                     y = torch.tensor(y).view(-1, 1).to(model.device)
                     with autocast():
-                        logits = model(query_tensors_new).logits
+                        logits = model(**query_tensors_new).logits
                 
                     num_token = logits[:, -1, :]
                     scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(num_token.shape[0], 101).to(model.device)
@@ -1425,8 +1425,8 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
             test_probs.extend(probs.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
-            print(probs)
-            print(confidence_stage1)
+            # print(probs)
+            # print(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        

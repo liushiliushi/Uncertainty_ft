@@ -139,7 +139,7 @@ def main(**kwargs):
 
     # Load the tokenizer and add special tokens
     tokenizer = AutoTokenizer.from_pretrained(
-        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name)
+        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
     # tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # If there is a mismatch between tokenizer vocab size and embedding matrix,
