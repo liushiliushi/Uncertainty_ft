@@ -53,3 +53,4 @@ dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a390854
 dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a3908546c6fd5b73a660e0f8ff173c2f/trivia_qa-validation.arrow
 train_response2.jsonl
 dataset/filter.py
+dataset/trivia_qa/__MACOSX/._tqa_train_response.jsonl

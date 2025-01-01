@@ -1425,8 +1425,8 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
             test_probs.extend(probs.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
-            print(probs)
-            print(confidence_stage1)
+            # print(probs)
+            # print(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        
