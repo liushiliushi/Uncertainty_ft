@@ -1377,6 +1377,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         "max_new_tokens": 200, 
         "top_k": 0.0,
         "top_p": 1.0,
+        "repetition_penalty": train_config.repetition_penalty,
         "temperature": train_config.temperature,
         "do_sample": train_config.do_sample,
         "pad_token_id": tokenizer.eos_token_id,
