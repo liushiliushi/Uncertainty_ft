@@ -4,7 +4,7 @@ import torch
 from collections import Counter
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import dataclasses
 import fire
@@ -139,8 +139,9 @@ def main(**kwargs):
 
     # Load the tokenizer and add special tokens
     tokenizer = AutoTokenizer.from_pretrained(
-        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name)
-    # tokenizer.pad_token_id = tokenizer.eos_token_id
+        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
+    # TODO
+    tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # If there is a mismatch between tokenizer vocab size and embedding matrix,
     # throw a warning and then expand the embedding matrix
