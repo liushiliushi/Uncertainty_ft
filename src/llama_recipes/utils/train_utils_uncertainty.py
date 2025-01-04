@@ -506,8 +506,10 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
                     #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
                     # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    # loss = loss_con + loss_cal
-                    loss = loss_cal
+                    if train_config.add_loss_con:
+                        loss = loss_con + loss_cal
+                    else:
+                        loss = loss_cal
                     print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}")
                     loss = loss / gradient_accumulation_steps
                     if train_config.save_metrics:
