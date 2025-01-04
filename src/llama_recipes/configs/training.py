@@ -59,3 +59,5 @@ class train_config:
     get_train_response: bool = False
     train_response_dir: str = "../dataset/grade_school_math/data/test_response.jsonl"
     test_original_model = False
+    cuda: str = "0"
+    add_loss_con: bool = False

@@ -52,6 +52,7 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
     if split == 'train':
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1500]')
+        # dataset = datasets.load_dataset('json', data_files=path, split='train[:300]')
     elif split == 'val':
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
