@@ -4,7 +4,7 @@
 import torch
 
 from llama_recipes.data.concatenator import ConcatDataset
-from llama_recipes.datasets2 import DATASET_PREPROC, DATASET_PREPROC_dynamic, get_custom_dataset
+from llama_recipes.datasets2 import DATASET_PREPROC, get_custom_dataset
 from llama_recipes.utils.config_utils import get_dataloader_kwargs
 
 
