@@ -457,6 +457,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader): # TODO
+                    print(batch['input_ids'].shape)
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
                     if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -471,7 +472,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                             if is_xpu_available():
                                 batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
                             else:
-                                batch[key] = batch[key].to(local_rank)
+                                batch[key] = batch[key].to(model.device) # TODO
                         else:
 
                             if is_xpu_available():
@@ -1314,6 +1315,17 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
             # stop when the maximum number of eval steps is reached
             
             # Ensure no gradients are computed for this scope to save memory
+            for key in batch.keys():
+                if train_config.enable_fsdp:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
+                    else:
+                        batch[key] = batch[key].to(local_rank)
+                else:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to('xpu:0')
+                    else:
+                        batch[key] = batch[key].to(model.device)
             with torch.no_grad():
                 # Forward pass and compute loss
                 output = model.generate(query_tensors, **generation_kwargs) 
@@ -1394,6 +1406,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         id = 0
         wan_table = wandb.Table(columns=['response','confidence', 'y'])
         for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
+            
             prompts = [json.loads(item) for item in batch["prompt"]]
             query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
@@ -1401,9 +1414,10 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
 
             with torch.no_grad():
                 output = model.generate(**query_tensors, **generation_kwargs, ) 
+                # output = model(**query_tensors, **generation_kwargs)
                 responses = output.sequences
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
+                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered,_ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 if len(prompts_new) == 0:
                     continue
                 y = torch.tensor(y).view(-1, 1).to(model.device)

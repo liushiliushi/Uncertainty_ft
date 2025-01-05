@@ -152,15 +152,15 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
 
 
     def tokenize_add_label(sample):
-        # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
         prompt = torch.cat((prompt, torch.tensor([220]))) # manually add white space because the tokenizer will automatically remove the white space ate the end of the sentence
         response = tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False)
+        response = torch.cat((torch.tensor(response), torch.tensor([220])))
         sample = {
             "input_ids": prompt,
             "attention_mask" : [1] * (len(prompt)),
             # 'conf_index': torch.tensor([len(prompt) - 1]),
-            'label': [-100] * (len(prompt)-len(response)) + response,
+            'label': [-100] * (len(prompt)-len(response)) + response.tolist(),
             'y': [sample['y']]
             }
 
