@@ -7,7 +7,6 @@ import json
 import dataclasses
 import fire
 import random
-import ray
 
 import torch.optim as optim
 from peft import get_peft_model, PeftModel, AutoPeftModelForCausalLM
@@ -59,13 +58,6 @@ from warnings import warn
 from vllm import LLM, SamplingParams
 
 
-@ray.remote(num_gpus=1)
-def run(prompts):
-    llm = LLM(
-        model=model_path,
-        tensor_parallel_size=1
-    )
-    return llm.generate(prompts)
 
 def main(**kwargs):
     # Update the configuration for the training and sharding process
