@@ -28,6 +28,7 @@ from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
 from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace
+from vllm import LLM, SamplingParams
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
@@ -456,7 +457,10 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             with profile(train_config,local_rank) as profile_context:
-                for step, batch in enumerate(train_dataloader): # TODO
+                for step, batch in enumerate(train_dataloader): 
+                    # TODO
+                    if batch['input_ids'].shape[1] > 800:
+                        continue
                     total_train_steps += 1
                     # stop when the maximum number of training steps is reached
                     if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -471,7 +475,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                             if is_xpu_available():
                                 batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
                             else:
-                                batch[key] = batch[key].to(local_rank)
+                                batch[key] = batch[key].to(model.device) # TODO
                         else:
 
                             if is_xpu_available():
@@ -1314,6 +1318,17 @@ def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
             # stop when the maximum number of eval steps is reached
             
             # Ensure no gradients are computed for this scope to save memory
+            for key in batch.keys():
+                if train_config.enable_fsdp:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
+                    else:
+                        batch[key] = batch[key].to(local_rank)
+                else:
+                    if is_xpu_available():
+                        batch[key] = batch[key].to('xpu:0')
+                    else:
+                        batch[key] = batch[key].to(model.device)
             with torch.no_grad():
                 # Forward pass and compute loss
                 output = model.generate(query_tensors, **generation_kwargs) 
@@ -1394,6 +1409,7 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         id = 0
         wan_table = wandb.Table(columns=['response','confidence', 'y'])
         for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
+            
             prompts = [json.loads(item) for item in batch["prompt"]]
             query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
             # stop when the maximum number of eval steps is reached
@@ -1401,9 +1417,10 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
 
             with torch.no_grad():
                 output = model.generate(**query_tensors, **generation_kwargs, ) 
+                # output = model(**query_tensors, **generation_kwargs)
                 responses = output.sequences
                 batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
+                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered,_ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
                 if len(prompts_new) == 0:
                     continue
                 y = torch.tensor(y).view(-1, 1).to(model.device)
@@ -1476,6 +1493,88 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
                     }, commit=False)
 
     return ece_score, roc_auc_score
+
+def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader
+
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    if train_config.enable_fsdp:
+        world_size = int(os.environ["WORLD_SIZE"])
+    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
+    
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if not train_config.enable_fsdp or rank==0:
+            if original == True:
+                wandb_run.log({"Testing_samples/original": wan_table})
+            else:
+                wandb_run.log({"Testing_samples/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences)
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+
+    # If there's more than one CUDA device, reduce evaluation loss across all devices
+    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
+        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+
+    if wandb_run:
+        if not train_config.enable_fsdp or rank==0:
+            wandb_run.log({
+                        'test/ece_stage1': ece_score,
+                        'test/roc_auc_stage1': roc_auc_score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score
+
+
 
 
 def freeze_transformer_layers(model, num_layer):

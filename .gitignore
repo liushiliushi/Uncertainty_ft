@@ -54,3 +54,6 @@ dataset/Trivia_qa/mandarjoshi___trivia_qa/rc.web.nocontext/0.0.0/0f7faf33a390854
 train_response2.jsonl
 dataset/filter.py
 dataset/trivia_qa/__MACOSX/._tqa_train_response.jsonl
+dataset/grade_school_math/data/test_response_temp=0.jsonl
+dataset/grade_school_math/data/train_response_temp=0.jsonl
+dataset/grade_school_math/data/train_response.jsonl
