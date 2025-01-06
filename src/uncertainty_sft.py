@@ -46,6 +46,7 @@ from llama_recipes.utils.fsdp_utils import hsdp_device_mesh
 from llama_recipes.utils.train_utils_uncertainty import (
     train,
     train_chat,
+    test_vllm,
     train_dynamic,
     freeze_transformer_layers,
     setup,
@@ -124,100 +125,14 @@ def main(**kwargs):
         update_config(quant_config, **kwargs)
         bnb_config = quant_config.create_bnb_config(train_config.quantization)
 
-    # Load the pre-trained model and setup its configuration
-    use_cache = False if train_config.enable_fsdp else None
-    model = LlamaForCausalLM.from_pretrained(
-        train_config.model_name,
-        quantization_config=bnb_config,
-        use_cache=use_cache,
-        attn_implementation="sdpa" if train_config.use_fast_kernels else None,
-        device_map="auto" if train_config.quantization and not train_config.enable_fsdp else None,
-        torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
-    )
-    
+        dataset_config = None
+    # Load and preprocess the dataset for training and validation
 
-    # model = AutoPeftModelForCausalLM.from_pretrained("checkpoints0921")
-
-    # Load the tokenizer and add special tokens
     tokenizer = AutoTokenizer.from_pretrained(
-        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
+    train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
     # TODO
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # If there is a mismatch between tokenizer vocab size and embedding matrix,
-    # throw a warning and then expand the embedding matrix
-    if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
-        print("WARNING: Resizing the embedding matrix to match the tokenizer vocab size.")
-        model.resize_token_embeddings(len(tokenizer))
-
-    print_model_size(model, train_config, rank if train_config.enable_fsdp else 0)
-
-    # Convert the model to bfloat16 if fsdp and pure_bf16 is enabled
-    if train_config.enable_fsdp and fsdp_config.pure_bf16 and not train_config.quantization:
-        model.to(torch.bfloat16)
-
-    if train_config.use_peft:
-        # Load the pre-trained peft model checkpoint and setup its configuration
-        if train_config.from_peft_checkpoint:
-            model = PeftModel.from_pretrained(model, train_config.from_peft_checkpoint, is_trainable=True)
-            peft_config = model.peft_config
-        # Generate the peft config and start fine-tuning from original model
-        else:
-            peft_config = generate_peft_config(train_config, kwargs)
-            model = get_peft_model(model, peft_config)
-        if wandb_run:
-            wandb_run.config.update(peft_config)
-        model.print_trainable_parameters()
-
-    hsdp_device_mesh_plan = None
-    if fsdp_config.hsdp and fsdp_config.sharding_strategy == ShardingStrategy.HYBRID_SHARD:
-        hsdp_device_mesh_plan = hsdp_device_mesh(replica_group_size=fsdp_config.replica_group_size,
-                                                 sharding_group_size=fsdp_config.sharding_group_size)
-        print("HSDP device mesh is ready")
-
-    # setting up FSDP if enable_fsdp is enabled
-    if train_config.enable_fsdp:
-        check_fsdp_config(fsdp_config)
-
-        if not train_config.use_peft and train_config.freeze_layers:
-            freeze_transformer_layers(model, train_config.num_freeze_layers)
-
-        mixed_precision_policy, wrapping_policy = get_policies(fsdp_config, rank)
-        my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, LlamaDecoderLayer)
-
-        device_id = 0
-        if is_xpu_available():
-            device_id = torch.xpu.current_device()
-        elif torch.cuda.is_available():
-            device_id = torch.cuda.current_device()
-        model = FSDP(
-            model,
-            auto_wrap_policy=my_auto_wrapping_policy if train_config.use_peft else wrapping_policy,
-            cpu_offload=CPUOffload(offload_params=True) if fsdp_config.fsdp_cpu_offload else None,
-            mixed_precision=mixed_precision_policy if not fsdp_config.pure_bf16 else None,
-            sharding_strategy=fsdp_config.sharding_strategy,
-            device_mesh=hsdp_device_mesh_plan,
-            device_id=device_id,
-            limit_all_gathers=True,
-            sync_module_states=train_config.low_cpu_fsdp,
-            param_init_fn=(lambda module: module.to_empty(device=torch.device("cuda"), recurse=False))
-            if train_config.low_cpu_fsdp and rank != 0 else None,
-        )
-        if fsdp_config.fsdp_activation_checkpointing:
-            model.enable_input_require_grads()
-            model.gradient_checkpointing_enable()
-            apply_fsdp_checkpointing(model)
-    elif not train_config.quantization and not train_config.enable_fsdp:
-        if is_xpu_available():
-            model.to("xpu:0")
-        elif torch.cuda.is_available():
-            model.to("cuda")
-
-    # dataset_config = generate_dataset_config(train_config, kwargs)
-    # dataset_config.train_split = 'train'
-    # dataset_config.test_split = 'validation'
-    dataset_config = None
-    # Load and preprocess the dataset for training and validation
     dataset_train = get_preprocessed_dataset2(
         tokenizer,
         train_config.dataset,
@@ -295,6 +210,89 @@ def main(**kwargs):
                 "The eval set size is too small for dataloader to load even one batch. Please increase the size of eval set.")
         else:
             print(f"--> Num of Validation Set Batches loaded = {len(eval_dataloader)}")
+    # test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+
+    # Load the pre-trained model and setup its configuration
+    use_cache = False if train_config.enable_fsdp else None
+    model = LlamaForCausalLM.from_pretrained(
+        train_config.model_name,
+        quantization_config=bnb_config,
+        use_cache=use_cache,
+        attn_implementation="sdpa" if train_config.use_fast_kernels else None,
+        device_map="auto" if train_config.quantization and not train_config.enable_fsdp else None,
+        torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
+    )
+    
+
+    # If there is a mismatch between tokenizer vocab size and embedding matrix,
+    # throw a warning and then expand the embedding matrix
+    if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
+        print("WARNING: Resizing the embedding matrix to match the tokenizer vocab size.")
+        model.resize_token_embeddings(len(tokenizer))
+
+    print_model_size(model, train_config, rank if train_config.enable_fsdp else 0)
+
+    # Convert the model to bfloat16 if fsdp and pure_bf16 is enabled
+    if train_config.enable_fsdp and fsdp_config.pure_bf16 and not train_config.quantization:
+        model.to(torch.bfloat16)
+
+    if train_config.use_peft:
+        # Load the pre-trained peft model checkpoint and setup its configuration
+        if train_config.from_peft_checkpoint:
+            model = PeftModel.from_pretrained(model, train_config.from_peft_checkpoint, is_trainable=True)
+            peft_config = model.peft_config
+        # Generate the peft config and start fine-tuning from original model
+        else:
+            peft_config = generate_peft_config(train_config, kwargs)
+            model = get_peft_model(model, peft_config)
+        if wandb_run:
+            wandb_run.config.update(peft_config)
+        model.print_trainable_parameters()
+
+    hsdp_device_mesh_plan = None
+    if fsdp_config.hsdp and fsdp_config.sharding_strategy == ShardingStrategy.HYBRID_SHARD:
+        hsdp_device_mesh_plan = hsdp_device_mesh(replica_group_size=fsdp_config.replica_group_size,
+                                                 sharding_group_size=fsdp_config.sharding_group_size)
+        print("HSDP device mesh is ready")
+
+    # setting up FSDP if enable_fsdp is enabled
+    if train_config.enable_fsdp:
+        check_fsdp_config(fsdp_config)
+
+        if not train_config.use_peft and train_config.freeze_layers:
+            freeze_transformer_layers(model, train_config.num_freeze_layers)
+
+        mixed_precision_policy, wrapping_policy = get_policies(fsdp_config, rank)
+        my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, LlamaDecoderLayer)
+
+        device_id = 0
+        if is_xpu_available():
+            device_id = torch.xpu.current_device()
+        elif torch.cuda.is_available():
+            device_id = torch.cuda.current_device()
+        model = FSDP(
+            model,
+            auto_wrap_policy=my_auto_wrapping_policy if train_config.use_peft else wrapping_policy,
+            cpu_offload=CPUOffload(offload_params=True) if fsdp_config.fsdp_cpu_offload else None,
+            mixed_precision=mixed_precision_policy if not fsdp_config.pure_bf16 else None,
+            sharding_strategy=fsdp_config.sharding_strategy,
+            device_mesh=hsdp_device_mesh_plan,
+            device_id=device_id,
+            limit_all_gathers=True,
+            sync_module_states=train_config.low_cpu_fsdp,
+            param_init_fn=(lambda module: module.to_empty(device=torch.device("cuda"), recurse=False))
+            if train_config.low_cpu_fsdp and rank != 0 else None,
+        )
+        if fsdp_config.fsdp_activation_checkpointing:
+            model.enable_input_require_grads()
+            model.gradient_checkpointing_enable()
+            apply_fsdp_checkpointing(model)
+    elif not train_config.quantization and not train_config.enable_fsdp:
+        if is_xpu_available():
+            model.to("xpu:0")
+        elif torch.cuda.is_available():
+            model.to("cuda")
+
 
     # Initialize the optimizer and learning rate scheduler
     if fsdp_config.pure_bf16 and fsdp_config.optimizer == "anyprecision":
@@ -314,6 +312,7 @@ def main(**kwargs):
         )
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     # Start the training process
+    
     if train_config.on_policy == True:
         results = train_dynamic(
             model,

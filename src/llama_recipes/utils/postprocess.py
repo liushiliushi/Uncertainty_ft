@@ -79,10 +79,15 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                             out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
                         questions.append(prompt_question)
                         correct_answer_cleans.append(json.loads(correct_answers[id]))
-                        out_responses.append(prompt)
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+                        else:
+                            out_responses.append(prompt)
                     else:
                         y_None.append(None)
                         confidences_None.append(None)
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
 
             id += 1
     out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
