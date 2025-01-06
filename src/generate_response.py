@@ -68,7 +68,7 @@ def main(**kwargs):
         torch.xpu.manual_seed(train_config.seed)
     torch.manual_seed(train_config.seed)
     random.seed(train_config.seed)
-    os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
+    
 
     if train_config.enable_fsdp:
         setup()
