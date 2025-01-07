@@ -12,7 +12,7 @@ from llama_recipes.datasets2.toxicchat_dataset import get_llamaguard_toxicchat_d
 from llama_recipes.datasets2.professional_law import get_professional_law
 from llama_recipes.datasets2.strategyqa_dataset import get_strategyqa
 from llama_recipes.datasets2.object_cou import get_object_cou2
-from llama_recipes.datasets2.trivia_qa import get_trivia_qa#, get_trivia_qa_dynamic
+from llama_recipes.datasets2.trivia_qa import get_trivia_qa, get_trivia_qa_raw
 
 DATASET_PREPROC = {
     "alpaca_dataset": partial(get_alpaca_dataset),
@@ -24,7 +24,8 @@ DATASET_PREPROC = {
     "professional_law": get_professional_law,
     "strategyqa": get_strategyqa,
     "object_cou": get_object_cou2,
-    "trivia_qa": get_trivia_qa
+    "trivia_qa": get_trivia_qa,
+    "truthful_qa": get_truthful_qa,
 }
 
 DATASET_RAW = {
@@ -37,5 +38,6 @@ DATASET_RAW = {
     "professional_law": get_professional_law,
     "strategyqa": get_strategyqa,
     "object_cou": get_object_cou2,
-    "trivia_qa": get_trivia_qa
+    "trivia_qa": get_trivia_qa_raw,
+    "truthful_qa": get_truthful_qa_raw,
 }

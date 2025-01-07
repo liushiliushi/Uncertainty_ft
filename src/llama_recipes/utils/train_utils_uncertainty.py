@@ -280,6 +280,7 @@ def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, o
                     else:
                         print(f"we are about to save the PEFT modules")
                     if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                        model = model.to(dtype=torch.float16) 
                         model = model.merge_and_unload()
                         save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                         if train_config.enable_fsdp:
@@ -1553,7 +1554,7 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     print(f"Number: {number}")
     val_metrics = compute_conf_metrics(y, out_confidences)
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
         plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original)
 
     ece_score = val_metrics['ece']

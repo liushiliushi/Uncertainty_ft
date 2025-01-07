@@ -69,12 +69,12 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
 
-def get_trivia_qa_raw(tokenizer, split, vllm=True):
+def get_truthful_qa_raw(tokenizer, split, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='train[:10000]')
+        dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='train[:10000]')
     else:
-        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='test[:10000]')
+        dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='test[:10000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
@@ -85,7 +85,7 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
             prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
         else:
             prompt = json.dumps(prompt)
-        correct_answers = sample['answer']['normalized_aliases'] + [normalize_answer(ans) for ans in sample['answer'].get('human_answers', [])]
+        correct_answers = sample['correct_answers']
         correct_answer = json.dumps(correct_answers)
         return {
             'question': sample['question'],
@@ -97,21 +97,14 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
 
     return dataset
 
-def get_trivia_qa(tokenizer, split, on_policy = False):
+def get_truthful_qa(tokenizer, split, on_policy = False):
     if split == 'train':
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1500]')
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[:300]')
     elif split == 'val':
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
