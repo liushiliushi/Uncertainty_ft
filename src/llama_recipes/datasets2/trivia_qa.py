@@ -74,7 +74,7 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
     if split == 'train':
         dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='train[:10000]')
     else:
-        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='validation[:10000]')
+        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='validation')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},

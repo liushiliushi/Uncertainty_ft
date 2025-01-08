@@ -610,7 +610,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                     else:
                         print(f"we are about to save the PEFT modules")
                     if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                        model = model.to(dtype=torch.float32)
+                        # model = model.to(dtype=torch.float32)
                         model = model.merge_and_unload()
                         save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                         if train_config.enable_fsdp:
