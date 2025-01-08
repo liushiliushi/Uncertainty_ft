@@ -66,10 +66,10 @@ def extract_number(text):
 def get_gsm8k_dataset_raw(tokenizer, split, vllm=True):
     if split == 'train':
         path = '../dataset/grade_school_math/data/train.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         path = '../dataset/grade_school_math/data/test.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
