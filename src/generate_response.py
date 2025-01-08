@@ -226,7 +226,7 @@ def main(**kwargs):
         for query_ids in range(len(questions)):
             item= {"question": questions[query_ids],
                                             "response_clean": out_response_cleans[query_ids], 
-                                            "correct_answer": json.dumps(correct_answer_cleans[query_ids])}
+                                            "correct_answer": correct_answer_cleans[query_ids]}
             json_line = json.dumps(item)  
             f1.write(json_line + "\n")   
                 # f1.flush()

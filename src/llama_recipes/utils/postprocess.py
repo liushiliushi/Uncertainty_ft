@@ -74,7 +74,7 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         if not vllm:
                             prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
                         if vllm:
-                            out_response_cleans.append('Response:' + qblock)
+                            out_response_cleans.append(qblock)
                         else:
                             out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
                         questions.append(prompt_question)

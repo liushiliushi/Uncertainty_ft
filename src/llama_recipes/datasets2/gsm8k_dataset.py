@@ -66,10 +66,10 @@ def extract_number(text):
 def get_gsm8k_dataset_raw(tokenizer, split, vllm=True):
     if split == 'train':
         path = '../dataset/grade_school_math/data/train.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10000]')
     else:
         path = '../dataset/grade_school_math/data/test.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:10000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
@@ -98,16 +98,16 @@ def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:100]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:100]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
+                  {"role": "assistant", "content": f"Response:{sample['response_clean']}"} # attention!
                   ]
 
         matches = re.findall("Final answer: (.*)", sample['response_clean'])
@@ -127,12 +127,13 @@ def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
     def apply_prompt_template_test(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response:"}
+                  {"role": "assistant", "content": f"Response: "}
                   ]
 
         return {
+            "question": json.dumps(sample['question']), 
             "prompt": json.dumps(prompt),
-            "correct_answer": sample['correct_answer'],
+            "correct_answer": str(sample['correct_answer']),
         }
 
     if on_policy == False:
@@ -150,8 +151,8 @@ def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
         # prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
         prompt = torch.cat((prompt, torch.tensor([220])))
-        response = tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False)
-        response = torch.cat((torch.tensor(response), torch.tensor([220])))
+        response = torch.tensor(tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False))
+        # response = torch.cat((torch.tensor(response), torch.tensor([220])))
         sample = {
             "input_ids": prompt,
             "attention_mask" : [1] * (len(prompt)),

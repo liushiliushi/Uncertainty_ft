@@ -403,11 +403,11 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
     if train_config.enable_fsdp:
         world_size = int(os.environ["WORLD_SIZE"])
 
-    if train_config.test_original_model == True:
-        print("==============original evaluation================")
-        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = True)
-        print("==============original test2stage================")
-        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original = True)
+    # if train_config.test_original_model == True:
+    #     print("==============original evaluation================")
+    #     eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = True)
+    #     print("==============original test2stage================")
+    #     test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original = True)
 
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
@@ -460,6 +460,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
             with profile(train_config,local_rank) as profile_context:
                 for step, batch in enumerate(train_dataloader): 
                     # TODO
+                    print(batch['input_ids'].shape[1])
                     if batch['input_ids'].shape[1] > 800:
                         continue
                     total_train_steps += 1
@@ -609,6 +610,7 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                     else:
                         print(f"we are about to save the PEFT modules")
                     if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                        model = model.to(dtype=torch.float32)
                         model = model.merge_and_unload()
                         save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                         if train_config.enable_fsdp:
@@ -681,7 +683,11 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
 
 
     print("==============finetuned test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
+    # test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
+    model.cpu() 
+    del model
+    torch.cuda.empty_cache() 
+    test_ece, test_auroc = test_vllm(train_config, test_dataloader, tokenizer, wandb_run, original=False)
     avg_epoch_time = sum(epoch_times)/ len(epoch_times)
     avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
     avg_train_prep = sum(train_prep)/len(train_prep)
@@ -996,7 +1002,12 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
 
     # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
     print("==============finetuned test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
+    # test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
+    model.cpu() 
+    del model
+    torch.cuda.empty_cache() 
+    test_ece, test_auroc = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+
     avg_epoch_time = sum(epoch_times)/ len(epoch_times)
     avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
     avg_train_prep = sum(train_prep)/len(train_prep)

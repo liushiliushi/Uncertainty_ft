@@ -74,7 +74,7 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
     if split == 'train':
         dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='train[:10000]')
     else:
-        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='test[:10000]')
+        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='validation[:10000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
@@ -99,28 +99,19 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
 
 def get_trivia_qa(tokenizer, split, on_policy = False):
     if split == 'train':
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:1500]')
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[:300]')
+        path = "../dataset/trivia_qa/train_response_temp=0_10000.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_train_single.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[4000:]')
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_single.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train')
+        path = "../dataset/trivia_qa/validation_response_temp=0_10000.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train[:120]')
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train')
+        path = "../dataset/trivia_qa/validation_response_temp=0_10000.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
             {"role": "user", "content":  f"Question: {sample['question']}"},
-            {"role": "assistant", "content": f"Response: {sample['response_clean']}"}
+            {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
             ]
         matches1 = re.findall("Final answer: (.*)", sample['response_clean'])
         matches2 = re.findall("Confidence:", sample['response_clean'])
@@ -164,8 +155,7 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
     def tokenize_add_label(sample):
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
         prompt = torch.cat((prompt, torch.tensor([220]))) # manually add white space because the tokenizer will automatically remove the white space ate the end of the sentence
-        response = tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False)
-        response = torch.cat((torch.tensor(response), torch.tensor([220])))
+        response = torch.tensor(tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False))
         sample = {
             "input_ids": prompt,
             "attention_mask" : [1] * (len(prompt)),

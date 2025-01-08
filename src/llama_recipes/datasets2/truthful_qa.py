@@ -71,10 +71,8 @@ def normalize_answer(s):
 
 def get_truthful_qa_raw(tokenizer, split, vllm=True):
     
-    if split == 'train':
-        dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='train[:10000]')
-    else:
-        dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='test[:10000]')
+    dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='validation')
+
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},

@@ -240,7 +240,7 @@ def main(**kwargs):
             model.to("xpu:0")
         elif torch.cuda.is_available():
             model.to("cuda")
-    model = dequantize_model(model, tokenizer, to=train_config.output_dir, dtype=torch.bfloat16, device="cpu")
+    model = model.to(dtype=torch.float32)
     model = model.merge_and_unload()
     save_merged_checkpoint(model, tokenizer, train_config.output_dir)
 

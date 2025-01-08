@@ -210,7 +210,9 @@ def main(**kwargs):
                 "The eval set size is too small for dataloader to load even one batch. Please increase the size of eval set.")
         else:
             print(f"--> Num of Validation Set Batches loaded = {len(eval_dataloader)}")
-    # test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+    if train_config.test_original_model == True:
+        print("==============original test================")
+        test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
     # Load the pre-trained model and setup its configuration
     use_cache = False if train_config.enable_fsdp else None
@@ -292,7 +294,7 @@ def main(**kwargs):
             model.to("xpu:0")
         elif torch.cuda.is_available():
             model.to("cuda")
-
+    
 
     # Initialize the optimizer and learning rate scheduler
     if fsdp_config.pure_bf16 and fsdp_config.optimizer == "anyprecision":
@@ -318,7 +320,7 @@ def main(**kwargs):
             model,
             train_dataloader,
             eval_dataloader,
-            test_dataloader,
+            dataset_test,
             tokenizer,
             optimizer,
             scheduler,
@@ -334,7 +336,7 @@ def main(**kwargs):
             model,
             train_dataloader,
             eval_dataloader,
-            test_dataloader,
+            dataset_test,
             tokenizer,
             optimizer,
             scheduler,
