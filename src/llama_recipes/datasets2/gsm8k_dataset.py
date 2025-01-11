@@ -7,7 +7,7 @@ import os
 import re
 import torch
 from datasets import concatenate_datasets
-
+from datasets import Dataset, Features, Value
 
 system_prompt = """You will be asked math problems. Please respond to the best of your ability.
                    Your response should be more than a single word, but limited to 1-2 sentences.
@@ -74,7 +74,7 @@ def get_gsm8k_dataset_raw(tokenizer, split, vllm=True):
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response:"}
+                  {"role": "assistant", "content": f"Response: "}
                   ]
         if vllm:
             prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
@@ -129,16 +129,20 @@ def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
                   {"role": "user", "content": f"Question: {sample['question']}"},
                   {"role": "assistant", "content": f"Response: "}
                   ]
-
         return {
-            "question": json.dumps(sample['question']), 
+            "question": sample['question'], 
             "prompt": json.dumps(prompt),
             "correct_answer": str(sample['correct_answer']),
         }
 
     if on_policy == False:
         if split == 'test':
-            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+            new_features = Features({
+                'question': Value('string'),
+                'prompt': Value('string'),
+                'correct_answer': Value('string')  # 明确指定为字符串类型
+            })
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features), features=new_features)
         else:
             dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     else:

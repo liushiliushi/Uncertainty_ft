@@ -168,19 +168,15 @@ def main(**kwargs):
     if train_config.on_policy == True:
         train_dataloader = torch.utils.data.DataLoader(
             dataset_train,
-            num_workers= 0,
-            # num_workers=train_config.num_workers_dataloader,
+            num_workers=0,
             pin_memory=True,
-            batch_sampler=train_dl_kwargs['batch_sampler']
-            # **train_dl_kwargs,
+            batch_sampler=train_dl_kwargs['batch_sampler'],
         )
     else:
         train_dataloader = torch.utils.data.DataLoader(
             dataset_train,
-            num_workers= 0,
-            # num_workers=train_config.num_workers_dataloader,
+            num_workers=0,
             pin_memory=True,
-            #batch_sampler=train_dl_kwargs['batch_sampler']
             **train_dl_kwargs,
         )
 
@@ -340,7 +336,7 @@ def main(**kwargs):
             tokenizer,
             optimizer,
             scheduler,
-            train_config.gradient_accumulation_steps,
+            train_config.gradient_accumulation_steps, 
             train_config,
             fsdp_config if train_config.enable_fsdp else None,
             local_rank if train_config.enable_fsdp else None,

@@ -610,8 +610,9 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
                     else:
                         print(f"we are about to save the PEFT modules")
                     if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                        # model = model.to(dtype=torch.float32)
+                        model = model.to(dtype=torch.float32)
                         model = model.merge_and_unload()
+                        model = model.to(dtype=torch.float16)
                         save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                         if train_config.enable_fsdp:
                             if rank==0:
@@ -680,36 +681,34 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
         if train_config.save_metrics:
             save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
 
-
-
-    print("==============finetuned test2stage================")
-    # test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
     model.cpu() 
     del model
     torch.cuda.empty_cache() 
-    test_ece, test_auroc = test_vllm(train_config, test_dataloader, tokenizer, wandb_run, original=False)
-    avg_epoch_time = sum(epoch_times)/ len(epoch_times)
-    avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
-    avg_train_prep = sum(train_prep)/len(train_prep)
-    avg_train_loss = sum(train_loss)/len(train_loss)
-    if train_config.run_validation:
-        avg_eval_prep = sum(val_prep)/len(val_prep)
-        avg_eval_loss = sum(val_loss)/len(val_loss)
+    if not train_config.enable_fsdp or local_rank == 0:
+        print("==============finetuned test2stage================")
+        test_ece, test_auroc = test_vllm(train_config, test_dataloader, tokenizer, wandb_run, original=False)
+        avg_epoch_time = sum(epoch_times)/ len(epoch_times)
+        avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
+        avg_train_prep = sum(train_prep)/len(train_prep)
+        avg_train_loss = sum(train_loss)/len(train_loss)
+        if train_config.run_validation:
+            avg_eval_prep = sum(val_prep)/len(val_prep)
+            avg_eval_loss = sum(val_loss)/len(val_loss)
 
-    results['avg_train_prep'] = avg_train_prep
-    results['avg_train_loss'] = avg_train_loss
-    if train_config.run_validation:
-        results['avg_eval_prep'] = avg_eval_prep
-        results['avg_eval_loss'] = avg_eval_loss
-    results["avg_epoch_time"] = avg_epoch_time
-    results["avg_checkpoint_time"] = avg_checkpoint_time
-    if train_config.save_metrics:
-        results["metrics_filename"] = metrics_filename
-    if train_config.flop_counter:
-        results["model_tflops"]= TFlops
-    #saving the training params including fsdp setting for reference.
-    if train_config.enable_fsdp and not train_config.use_peft and rank==0:
-        save_train_params(train_config, fsdp_config, rank)
+        results['avg_train_prep'] = avg_train_prep
+        results['avg_train_loss'] = avg_train_loss
+        if train_config.run_validation:
+            results['avg_eval_prep'] = avg_eval_prep
+            results['avg_eval_loss'] = avg_eval_loss
+        results["avg_epoch_time"] = avg_epoch_time
+        results["avg_checkpoint_time"] = avg_checkpoint_time
+        if train_config.save_metrics:
+            results["metrics_filename"] = metrics_filename
+        if train_config.flop_counter:
+            results["model_tflops"]= TFlops
+        #saving the training params including fsdp setting for reference.
+        if train_config.enable_fsdp and not train_config.use_peft and rank==0:
+            save_train_params(train_config, fsdp_config, rank)
 
     return results
 
