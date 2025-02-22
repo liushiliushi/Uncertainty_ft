@@ -71,7 +71,7 @@ def normalize_answer(s):
 
 def get_truthful_qa_raw(tokenizer, split, vllm=True):
     
-    dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split='validation')
+    dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split=split)
 
 
     def apply_prompt_template(sample):
@@ -98,12 +98,12 @@ def get_truthful_qa_raw(tokenizer, split, vllm=True):
 def get_truthful_qa(tokenizer, split, on_policy = False):
     if split == 'train':
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:1500]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
+        path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
     else:
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
+        path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
         # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
         # dataset = datasets.load_dataset('json', data_files=path, split='train')

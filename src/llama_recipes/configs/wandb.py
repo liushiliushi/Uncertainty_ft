@@ -13,3 +13,6 @@ class wandb_config:
     group: Optional[str] = None
     notes: Optional[str] = None
     mode: Optional[str] = None
+    resume: Optional[bool] = False
+    id: Optional[str] = None
+    # allow_val_change: Optional[bool] = True
