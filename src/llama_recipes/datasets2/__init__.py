@@ -14,6 +14,7 @@ from llama_recipes.datasets2.strategyqa_dataset import get_strategyqa
 from llama_recipes.datasets2.object_cou import get_object_cou2
 from llama_recipes.datasets2.trivia_qa import get_trivia_qa, get_trivia_qa_raw
 from llama_recipes.datasets2.truthful_qa import get_truthful_qa, get_truthful_qa_raw
+from llama_recipes.datasets2.hotpot_qa import get_hotpot_qa, get_hotpot_qa_raw
 DATASET_PREPROC = {
     "alpaca_dataset": partial(get_alpaca_dataset),
     "grammar_dataset": get_grammar_dataset,
@@ -26,6 +27,7 @@ DATASET_PREPROC = {
     "object_cou": get_object_cou2,
     "trivia_qa": get_trivia_qa,
     "truthful_qa": get_truthful_qa,
+    "hotpot_qa": get_hotpot_qa,
 }
 
 DATASET_RAW = {
@@ -40,4 +42,5 @@ DATASET_RAW = {
     "object_cou": get_object_cou2,
     "trivia_qa": get_trivia_qa_raw,
     "truthful_qa": get_truthful_qa_raw,
+    "hotpot_qa": get_hotpot_qa_raw,
 }
