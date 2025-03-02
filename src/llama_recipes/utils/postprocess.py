@@ -41,7 +41,6 @@ def extract_number(text):
 
 def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
     out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
-
     if True:
         id = 0
         for prompt, answer in zip(prompts, answers):
@@ -62,7 +61,7 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         confidences_None.append(matches2[-1])
                         if dataset_name == 'gsm8k_dataset':
                             correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
-                        elif dataset_name == "trivia_qa" or dataset_name == "truthful_qa":
+                        elif dataset_name == "trivia_qa" or dataset_name == "truthful_qa" or dataset_name == "strategy_qa":
                             correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
                         if correct:
                             y.append(1)

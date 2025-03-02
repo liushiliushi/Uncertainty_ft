@@ -15,7 +15,27 @@ def read_jsonl(path: str):
 
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 INVALID_ANS = "[invalid]"
+system_prompt = """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please provide the final answer of yes or no. If no answer is present, please write "NONE".
+            Finally, please provide your confidence (0%-100%) to your answer.
 
+            Here are some examples:
+
+            Question: Can plants survive without sunlight?
+            Response: No. Photosynthesis depends on sunlight.
+            Final answer: No.
+            Confidence: 95%
+
+            Question: Do all mammals lay eggs?
+            Response: No. Only monotremes (e.g., platypus) do.
+            Final answer: No.
+            Confidence: 97%
+
+            Question: Is water a good conductor of electricity?
+            Response: No. Pure water lacks conductive ions.
+            Final answer: No.
+            Confidence: 90%"""
 
 def extract_answer(completion):
     match = ANS_RE.search(completion)
@@ -26,63 +46,25 @@ def extract_answer(completion):
     else:
         return INVALID_ANS
 
-def get_strategyqa(tokenizer, split):
+def get_strategyqa(tokenizer, split, on_policy=False):
     if split == 'train':
-        path = '../dataset/StrategyQA/train.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        print("Error! Strategy QA is not used for training.")
     else:
-        path = '../dataset/StrategyQA/test.jsonl'
+        path = '../dataset/StrategyQA/task.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')
-    character = ["(A)", "(B)", "(C)", "(D)", "(E)", "(F)", "(G)", "(H)", "(I)", "(J)", "(K)", "(L)", "(M)", "(N)",
-                 "(O)", "(P)", "(Q)", "(R)", "(S)", "(T)", "(U)", "(V)", "(W)", "(X)", "(Y)", "(Z)"]
 
-    def apply_prompt_template(qa):
-
-        question = qa['input'] + '\n' + 'Options: '
-        j = 0
-        for key, value in qa['target_scores'].items():
-            option = character[j] + " " + key + "\t"
-            question += option
-            if value == 1:
-                answer_index = j
-            j += 1
-
-        pos_answer = character[answer_index]
+    def apply_prompt_template(sample):
+        prompt = [{'role': 'system', 'content': system_prompt},
+            {"role": "user", "content":  f"Question: {sample['input']}"},
+            {"role": "assistant", "content": f"Response:"},
+            ]
+        correct_answer = "yes" if sample['target_scores']["Yes"] == 1 else "no"
         return {
-            "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {pos_answer}\nP: ",
-            "y": 1,
-        }
-    def apply_prompt_template_neg(qa):
-        question = qa['input'] + '\n' + 'Options: '
-        j = 0
-        for key, value in qa['target_scores'].items():
-            option = character[j] + " " + key + "\t"
-            question += option
-            if value == 1:
-                answer_index = j
-            j += 1
-        neg_answer = character[1-answer_index]
-        return {
-            "prompt": f"Provide the probability that the answer to the question is correct (0% to 100%). Give your step-by-step reasoning in a few words first and then give the final answer using the following format:\nP:<ONLY the probability that the answer is correct, without any extra commentary whatsoever; just the probability!>\n\nQuestion: {question}\nAnswer: {neg_answer}\nP: ",
-            "y": 0,
+            'question': json.dumps(sample['input']),
+            "prompt": json.dumps(prompt),
+            "correct_answer": json.dumps(correct_answer),
         }
 
-    dataset_pos = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    dataset_neg = dataset.map(apply_prompt_template_neg, remove_columns=list(dataset.features))
-    dataset = concatenate_datasets([dataset_pos, dataset_neg])
-
-    def tokenize_add_label(sample):
-        prompt = tokenizer.encode(tokenizer.bos_token + sample["prompt"], add_special_tokens=False)
-
-        sample = {
-            "input_ids": prompt,
-            "attention_mask" : [1] * (len(prompt)),
-            'y': [sample['y']]
-            }
-
-        return sample
-
-    dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
-
+    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 

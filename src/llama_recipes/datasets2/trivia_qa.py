@@ -74,15 +74,15 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
     if split == 'train':
         dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='train[:10000]')
     else:
-        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='validation')
+        dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='validation[:10000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response: "}
+                  {"role": "assistant", "content": f"Response:"}
                   ]
         if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
+            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True, max_length=8192)
         else:
             prompt = json.dumps(prompt)
         correct_answers = sample['answer']['normalized_aliases'] + [normalize_answer(ans) for ans in sample['answer'].get('human_answers', [])]
@@ -94,18 +94,17 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
         }
 
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-
     return dataset
 
 def get_trivia_qa(tokenizer, split, on_policy = False):
     if split == 'train':
-        path = "../dataset/trivia_qa/train_response_temp=0.1_10000.jsonl"
+        path = "../dataset/trivia_qa/train_response_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"
+        path = "../dataset/trivia_qa/validation_response_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
-        path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"
+        path = "../dataset/trivia_qa/validation_response_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
     def apply_prompt_template(sample):
