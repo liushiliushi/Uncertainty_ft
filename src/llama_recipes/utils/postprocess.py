@@ -2,6 +2,8 @@ import re
 import pdb 
 import string
 import json
+from utils.gpt_answer_scoring import GPTAnswerScoring
+
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -41,6 +43,8 @@ def extract_number(text):
 
 def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
     out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
+    if dataset_name == "trivia_qa":
+        answer_scorer = GPTAnswerScoring()
     if True:
         id = 0
         for prompt, answer in zip(prompts, answers):
@@ -63,6 +67,9 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                             correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
                         elif dataset_name == "trivia_qa" or dataset_name == "truthful_qa" or dataset_name == "strategy_qa":
                             correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
+                        elif dataset_name == "hotpot_qa":
+                            print(f"prompt_question:{prompt_question} answer:{matches[-1]} correct_answer:{json.loads(correct_answer[id])}")
+                            a = answer_scorer.score(prompt_question, matches1[-1], json.loads(correct_answers[id]))
                         if correct:
                             y.append(1)
                             y_None.append(1)
