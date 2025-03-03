@@ -18,7 +18,7 @@ def read_jsonl(path: str):
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 INVALID_ANS = "[invalid]"
 
-system_prompt = """You will be asked trivia questions. Please respond to the best of your ability.
+system_prompt = """You will be asked questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
             Finally, please provide your confidence (0%-100%) to your answer.
@@ -69,12 +69,9 @@ def normalize_answer(s):
 def get_hotpot_qa_raw(tokenizer, split, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:100]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:10000]', trust_remote_code=True)
     elif split == "validation":
         dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:10000]', trust_remote_code=True)
-    else:
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='test', trust_remote_code=True)
-    print(dataset[0])
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
@@ -92,7 +89,6 @@ def get_hotpot_qa_raw(tokenizer, split, vllm=True):
         }
 
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    print(dataset[0])
     return dataset
 
 def get_hotpot_qa(tokenizer, split, on_policy = False):
