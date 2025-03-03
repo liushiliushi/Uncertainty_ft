@@ -47,8 +47,8 @@ def extract_answer(completion):
         return match_str
     else:
         return INVALID_ANS
+
 def normalize_answer(s):
-    """Lower text and remove punctuation, articles and extra whitespace."""
 
     def remove_articles(text):
         return re.sub(r'\b(a|an|the)\b', ' ', text)
@@ -56,39 +56,35 @@ def normalize_answer(s):
     def white_space_fix(text):
         return ' '.join(text.split())
 
-    def handle_punc(text):
-        exclude = set(string.punctuation + "".join([u"‘", u"’", u"´", u"`"]))
-        return ''.join(ch if ch not in exclude else ' ' for ch in text)
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return ''.join(ch for ch in text if ch not in exclude)
 
     def lower(text):
         return text.lower()
 
-    def replace_underscore(text):
-        return text.replace('_', ' ')
-
-    return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
 
 
 def get_hotpot_qa_raw(tokenizer, split, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:100]', trust_remote_code=True)
     elif split == "validation":
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:10000]', trust_remote_code=True)
     else:
         dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='test', trust_remote_code=True)
     print(dataset[0])
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response: "}
+                  {"role": "assistant", "content": f"Response:"}
                   ]
         if vllm:
             prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
         else:
             prompt = json.dumps(prompt)
-        correct_answers = sample['answer']['normalized_aliases'] + [normalize_answer(ans) for ans in sample['answer'].get('human_answers', [])]
-        correct_answer = json.dumps(correct_answers)
+        correct_answer = json.dumps(sample['answer'])
         return {
             'question': sample['question'],
             "prompt": prompt,
@@ -96,7 +92,7 @@ def get_hotpot_qa_raw(tokenizer, split, vllm=True):
         }
 
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-
+    print(dataset[0])
     return dataset
 
 def get_hotpot_qa(tokenizer, split, on_policy = False):
