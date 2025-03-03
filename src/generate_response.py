@@ -170,6 +170,7 @@ def main(**kwargs):
                                      max_tokens=2048)
     prompts = dataset['prompt']
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+
     _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
 
     with open(train_config.output_dir, "w") as f1:

@@ -136,3 +136,5 @@ dataset/Hotpot_qa_raw/hotpotqa___hotpot_qa/distractor/1.0.0/133b9501f892e5193bab
 dataset/Hotpot_qa_raw/hotpotqa___hotpot_qa/distractor/1.0.0/133b9501f892e5193babbad937bee3b4899deb4691ef4d791e6ac0111c875bb5/cache-2ce7458077757c02.arrow
 dataset/Hotpot_qa_raw/hotpotqa___hotpot_qa/distractor/1.0.0/133b9501f892e5193babbad937bee3b4899deb4691ef4d791e6ac0111c875bb5/cache-4f04951759f5c451.arrow
 dataset/hotpot_qa/train_response_temp=0.jsonl
+dataset/*
+dataset/Truthful_qa_raw/truthful_qa/generation/0.0.0/741b8276f2d1982aa3d5b832d3ee81ed3b896490/cache-11161671e5445874.arrow

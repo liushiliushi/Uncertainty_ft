@@ -2,7 +2,6 @@ from openai import AzureOpenAI, OpenAIError, OpenAI
 import os
 import logging
 import time
-
 PROMPT = '''You need to evaluate the correctness of the following LLM response to an answer based on comparison. Please evaluate the correctness of the response on a scale of 1 to 10, where 1 is the least correct and 10 is the most correct.
 If the answer has no chain-of-thought process (directly gives the answer without thinking), even if the answer is correct, you should give a score of 1. If the answer is unrelated to the question, you should give a score of 1. If the answer is correct and has a chain-of-thought process, you should give a score of 10.
 Your score should be completely based on the similarity between LLM response and the correct answer.
@@ -81,7 +80,7 @@ class GPTAnswerScoring():
                 logging.error(e)
                 time.sleep(5)
                 try_time += 1
-        return 0
+        return None
     
     def score_other(self, question, response, best_answer, correct_answers):
         prompt = self.prompt.replace('<QUESTION>', question).replace('<RESPONSE>', response) \
