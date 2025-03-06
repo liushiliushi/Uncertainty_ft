@@ -27,17 +27,14 @@ system_prompt = """You will be asked trivia questions. Please respond to the bes
 
             Question: Who wrote Paradise Lost?
             Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Final answer: John Milton
             Confidence: 90%
 
             Question: Which colonial power did Algeria gain independence from in 1962? 
             Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Final answer: France
             Confidence: 100%
 
             Question: How many planets are in our solar system?
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Final answer: NONE
             Confidence: 0%"""
 def extract_answer(completion):
     match = ANS_RE.search(completion)
