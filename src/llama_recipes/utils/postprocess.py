@@ -58,9 +58,11 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
             for qblock in question_blocks:
                 if (prompt_question[:-2] in qblock) or vllm == True :
                     qblock = re.sub("</s>", "", qblock)
-                    matches1 = re.findall("Final answer: (.*)", qblock)
                     matches2 = re.findall("Confidence: (.*)", qblock)
-                    matches3 = re.match(r'^.*?(?=\n|$)', qblock)
+                    if dataset_name == "hotpot_qa":
+                        matches1 = re.match(r'^.*?(?=\n|$)', qblock)
+                    else:
+                        matches1 = re.findall("Final answer: (.*)", qblock)
                     if matches1 and matches2 and (matches2[-1] != ''):
                         out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
                         confidences_None.append(matches2[-1])
@@ -69,8 +71,8 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         elif dataset_name == "trivia_qa" or dataset_name == "truthful_qa" or dataset_name == "strategy_qa":
                             correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
                         elif dataset_name == "hotpot_qa":
-                            if False:
-                                score = answer_scorer.score(prompt_question, matches3.group(), json.loads(correct_answers[id]))
+                            if True:
+                                score = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
                                 correct = float(score) / 10
                             else:
                                 correct = 1

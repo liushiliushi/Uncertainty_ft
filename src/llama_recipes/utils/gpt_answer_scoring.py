@@ -2,9 +2,8 @@ from openai import AzureOpenAI, OpenAIError, OpenAI
 import os
 import logging
 import time
-PROMPT = '''You need to evaluate the correctness of the following LLM response to an answer based on comparison. Please evaluate the correctness of the response on a scale of 1 to 10, where 1 is the least correct and 10 is the most correct.
-If the answer has no chain-of-thought process (directly gives the answer without thinking), even if the answer is correct, you should give a score of 1. If the answer is unrelated to the question, you should give a score of 1. If the answer is correct and has a chain-of-thought process, you should give a score of 10.
-Your score should be completely based on the similarity between LLM response and the correct answer.
+PROMPT = '''You need to evaluate the correctness of the following LLM response to an answer based on comparison. Please evaluate the correctness of the response with "yes" or "no".
+Your response should be completely based on the similarity between LLM response and the correct answer.
 DO NOT use your own knowledge base when do the comparison.
 
 Question:
@@ -15,7 +14,7 @@ Correct Answer:
 <CORRECT_ANSWER>
 
 Your response should use the following format:
-Score: <score from 1 to 10>
+Score: <yes or no>
 '''
 
 OTHER_PROMPT = '''For the next task, we are going to evaluate the correctness of the following LLM response to an answer. Please evaluate the correctness of the response on a scale of 1 to 10, where 1 is the least correct and 10 is the most correct.
@@ -72,6 +71,7 @@ class GPTAnswerScoring():
                     ],
                 )
                 rsp = completion.choices[0].message.content
+                print(rsp)
                 score = self.parse_response(rsp)
                 if score < 0 or score > 10:
                     raise OpenAIError('Score out of range')
