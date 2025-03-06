@@ -9,8 +9,6 @@ import torch
 from datasets import concatenate_datasets
 from functools import partial
 import string
-os.environ['OPENAI_DEPLOYMENT_NAME'] = 'gpt-4o'
-os.environ['OPENAI_API_KEY'] = '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'
 def read_jsonl(path: str):
     with open(path) as fh:
         return [json.loads(line) for line in fh.readlines() if line]
