@@ -23,6 +23,7 @@ import json
 from llama_recipes.configs import train_config as TRAIN_CONFIG
 from llama_recipes.configs import quantization_config as QUANTIZATION_CONFIG
 from llama_recipes.data.concatenator import ConcatDataset2
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_yes
 from llama_recipes.utils.config_utils import (
     update_config,
     generate_peft_config,
@@ -79,15 +80,13 @@ def test_yes(train_config, test_dataset, tokenizer, wandb_run, original=False):
                                     top_k= -1,
                                     top_p=1.0,
                                      max_tokens=400,
-                                     logprobs=1)
+                                     logprobs=5)
 
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
-    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = [json.loads(item) for item in test_dataset["prompt"]][:10]
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    print(outputs[0].outputs[0].text)
-    print(outputs[0].outputs[0].logprobs)
-    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_yes(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
