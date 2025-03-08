@@ -18,9 +18,8 @@ def read_jsonl(path: str):
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 INVALID_ANS = "[invalid]"
 
-system_prompt = """You will be asked trivia questions. Please respond to the best of your ability.
+system_prompt = """You will be asked questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
-            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
             Finally, please provide your confidence (0%-100%) to your answer.
 
             Here are some examples:
@@ -74,7 +73,7 @@ def get_truthful_qa_raw(tokenizer, split, vllm=True):
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response: "}
+                  {"role": "assistant", "content": f"Response:"}
                   ]
         if vllm:
             prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
@@ -95,15 +94,12 @@ def get_truthful_qa_raw(tokenizer, split, vllm=True):
 def get_truthful_qa(tokenizer, split, on_policy = False):
     if split == 'train':
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
     elif split == 'val':
         path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
-        path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[1500:1600]')
-        # path = "/home/lyb/workspace/Uncertainty_ft/dataset/trivia_qa/tqa_val_multi.jsonl"
-        # dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split="validation")
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
@@ -135,7 +131,7 @@ def get_truthful_qa(tokenizer, split, on_policy = False):
         return {
             'question': json.dumps(sample['question']),
             "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(sample['correct_answer']),
+            "correct_answer": json.dumps(sample['correct_answers']),
         }
     if on_policy == False:
         if split == 'test':

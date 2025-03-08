@@ -2,6 +2,8 @@ from openai import AzureOpenAI, OpenAIError, OpenAI
 import os
 import logging
 import time
+import string
+import re
 PROMPT = '''You need to evaluate the correctness of the following LLM response to an answer based on comparison. Please evaluate the correctness of the response with "yes" or "no".
 Your response should be completely based on the similarity between LLM response and the correct answer.
 DO NOT use your own knowledge base when do the comparison.
@@ -14,7 +16,7 @@ Correct Answer:
 <CORRECT_ANSWER>
 
 Your response should use the following format:
-Score: <yes or no>
+Correct: <yes or no>
 '''
 
 OTHER_PROMPT = '''For the next task, we are going to evaluate the correctness of the following LLM response to an answer. Please evaluate the correctness of the response on a scale of 1 to 10, where 1 is the least correct and 10 is the most correct.
@@ -32,6 +34,28 @@ FIRST provide a one sentence explanation of why you gave the response the score 
 Explanation: <one-sentence explanation>
 Score: <score from 1 to 10>
 '''
+
+def normalize_answer(s):
+    """Lower text and remove punctuation, articles and extra whitespace."""
+
+    def remove_articles(text):
+        return re.sub(r'\b(a|an|the)\b', ' ', text)
+
+    def white_space_fix(text):
+        return ' '.join(text.split())
+
+    def handle_punc(text):
+        exclude = set(string.punctuation + "".join([u"‘", u"’", u"´", u"`"]))
+        return ''.join(ch if ch not in exclude else ' ' for ch in text)
+
+    def lower(text):
+        return text.lower()
+
+    def replace_underscore(text):
+        return text.replace('_', ' ')
+
+    return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
+
 
 class GPTAnswerScoring():
     def __init__(self, prompt=PROMPT, try_times=3):
@@ -51,8 +75,8 @@ class GPTAnswerScoring():
     def parse_response(self, response):
         try:
             response = response.split('\n')
-            score = float(response[0].split(':')[1].strip())
-            return int(score)
+            correct = response[0].split(':')[1].strip()
+            return correct
         except Exception as e:
             logging.error(e)
             return '', 0
@@ -71,11 +95,8 @@ class GPTAnswerScoring():
                     ],
                 )
                 rsp = completion.choices[0].message.content
-                print(rsp)
                 score = self.parse_response(rsp)
-                if score < 0 or score > 10:
-                    raise OpenAIError('Score out of range')
-                return score
+                return True if normalize_answer(score) == "yes" else False
             except OpenAIError as e:
                 logging.error(e)
                 time.sleep(5)

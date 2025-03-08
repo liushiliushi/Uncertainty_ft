@@ -43,7 +43,7 @@ def extract_number(text):
 
 def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
     out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
-    if dataset_name == "hotpot_qa":
+    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
         answer_scorer = GPTAnswerScoring()
     if True:
         id = 0
@@ -59,7 +59,7 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                 if (prompt_question[:-2] in qblock) or vllm == True :
                     qblock = re.sub("</s>", "", qblock)
                     matches2 = re.findall("Confidence: (.*)", qblock)
-                    if dataset_name == "hotpot_qa":
+                    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
                         matches1 = re.match(r'^.*?(?=\n|$)', qblock)
                     else:
                         matches1 = re.findall("Final answer: (.*)", qblock)
@@ -68,14 +68,12 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         confidences_None.append(matches2[-1])
                         if dataset_name == 'gsm8k_dataset':
                             correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
-                        elif dataset_name == "trivia_qa" or dataset_name == "truthful_qa" or dataset_name == "strategy_qa":
+                        elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
                             correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
                         elif dataset_name == "hotpot_qa":
-                            if True:
-                                score = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
-                                correct = float(score) / 10
-                            else:
-                                correct = 1
+                            correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
+                        elif dataset_name == "truthful_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
                         if correct:
                             y.append(1)
                             y_None.append(1)
@@ -103,7 +101,6 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
 
             id += 1
     out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
-    print(y)
     return out_responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans
 
 def postprocess_extract(prompts, answers, correct_answers, dataset_name='trivia_qa'):

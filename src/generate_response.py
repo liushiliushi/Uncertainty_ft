@@ -172,10 +172,16 @@ def main(**kwargs):
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
 
     _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
-
+    print(y)
     with open(train_config.output_dir, "w") as f1:
         for query_ids in range(len(questions)):
-            item= {"question": questions[query_ids],
+            if train_config.dataset == "hotpot_qa":
+                item= {"question": questions[query_ids],
+                                            "response_clean": out_response_cleans[query_ids], 
+                                            "correct_answer": correct_answer_cleans[query_ids],
+                                            "y": y[query_ids]}
+            else:
+                item= {"question": questions[query_ids],
                                             "response_clean": out_response_cleans[query_ids], 
                                             "correct_answer": correct_answer_cleans[query_ids]}
             json_line = json.dumps(item)  

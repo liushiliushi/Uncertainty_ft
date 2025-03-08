@@ -66,7 +66,7 @@ def get_hotpot_qa_raw(tokenizer, split, vllm=True):
     if split == 'train':
         dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:100]', trust_remote_code=True)
     elif split == "validation":
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:150]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:10]', trust_remote_code=True)
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
