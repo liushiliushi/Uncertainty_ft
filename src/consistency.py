@@ -23,14 +23,14 @@ import json
 from llama_recipes.configs import train_config as TRAIN_CONFIG
 from llama_recipes.configs import quantization_config as QUANTIZATION_CONFIG
 from llama_recipes.data.concatenator import ConcatDataset2
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_yes
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_cons
 from llama_recipes.utils.config_utils import (
     update_config,
     generate_peft_config,
     get_dataloader_kwargs,
 )
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.dataset_utils import get_dataset_yes
+from llama_recipes.utils.dataset_utils import get_dataset_cons
 from llama_recipes.utils.train_utils_uncertainty import (
     train_chat,
     test_vllm,
@@ -50,7 +50,7 @@ def setup_wandb(train_config, **kwargs):
     run.config.update(train_config)
     return run
 
-def test_yes(train_config, test_dataset, tokenizer, wandb_run, original=False):
+def test_cons(train_config, test_dataset, tokenizer, wandb_run, original=False):
     """
     Evaluates the model on the given dataloader
 
@@ -76,18 +76,18 @@ def test_yes(train_config, test_dataset, tokenizer, wandb_run, original=False):
         enforce_eager=True,
     )
     sampling_params = SamplingParams(
-                                     n=1,
+                                     n=10,
                                      temperature=train_config.temperature,
                                     top_k= -1,
                                     top_p=1.0,
-                                     max_tokens=400,
-                                     logprobs=5)
+                                     max_tokens=400,)
 
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = prompts
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_yes(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_cons(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
@@ -148,9 +148,9 @@ def main(**kwargs):
     )
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    dataset_test = get_dataset_yes(tokenizer, train_config.dataset, 'test', True)
+    dataset_test = get_dataset_cons(tokenizer, train_config.dataset, 'test', True)
 
-    test_yes(train_config, dataset_test, tokenizer, wandb_run, original=True)
+    test_cons(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
 
 

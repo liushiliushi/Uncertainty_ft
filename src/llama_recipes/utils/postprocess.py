@@ -3,7 +3,7 @@ import pdb
 import string
 import json
 from llama_recipes.utils.gpt_answer_scoring import GPTAnswerScoring
-
+import math
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -126,7 +126,7 @@ def find_logprobs(collection):
         elif item.decoded_token == ' no':
             logprob_no = item.logprob
     if logprob_yes and logprob_no:
-        return logprob_yes / (logprob_yes + logprob_no)        
+        return math.exp(logprob_yes) / (math.exp(logprob_yes) + math.exp(logprob_no))        
     else:
         return None
 
@@ -141,9 +141,8 @@ def confidence_replace_yes(prompts, answers, correct_answers, dataset_name='triv
                 response = answer.outputs[0].text
                 confidence = answer.outputs[0].logprobs[-2]
                 confidence_score = find_logprobs(confidence)
-                print(confidence_score)
                 prompt_question = prompt
-                question_blocks = [answer]
+                question_blocks = [response]
             else:
                 prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
                 question_blocks = re.split("(Question:)", response)
@@ -158,7 +157,7 @@ def confidence_replace_yes(prompts, answers, correct_answers, dataset_name='triv
                         out_confidences.append(confidence_score)  # 如果有匹配，取最后一个
                         confidences_None.append(confidence_score)
                         if dataset_name == 'gsm8k_dataset':
-                            correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
+                            correct = extract_number(matches1[-1]) == correct_answers[id]
                         elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
                             correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
                         elif dataset_name == "hotpot_qa":
@@ -179,7 +178,10 @@ def confidence_replace_yes(prompts, answers, correct_answers, dataset_name='triv
                         else:
                             out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
                         questions.append(prompt_question)
-                        correct_answer_cleans.append(json.loads(correct_answers[id]))
+                        if dataset_name == "gsm8k_dataset":
+                            correct_answer_cleans.append(correct_answers[id])
+                        else:
+                            correct_answer_cleans.append(json.loads(correct_answers[id]))
                         if vllm:
                             out_responses.append(f"Question: {prompt}\n Response:{qblock}")
                         else:
@@ -190,6 +192,52 @@ def confidence_replace_yes(prompts, answers, correct_answers, dataset_name='triv
                         if vllm:
                             out_responses.append(f"Question: {prompt}\n Response:{qblock}")
 
+            id += 1
+    #out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
+    return out_responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans
+
+def confidence_replace_cons(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
+    out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
+    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+        answer_scorer = GPTAnswerScoring()
+    if True:
+        id = 0
+        for prompt, answer in zip(prompts, answers):
+            correct_list = []
+            prompt_question = prompt
+            for a in answer.outputs:
+                response = a.text
+                # confidence = answer.outputs[0].logprobs[-2]
+                # confidence_score = find_logprobs(confidence)
+                qblock = response
+
+                if vllm == True :
+                    qblock = re.sub("</s>", "", qblock)
+                    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+                        matches1 = re.match(r'^.*?(?=\n|$)', qblock)
+                    else:
+                        matches1 = re.findall("Final answer: (.*)", qblock)
+                    if matches1:
+                        if dataset_name == 'gsm8k_dataset':
+                            correct = extract_number(matches1[-1]) == correct_answers[id]
+                        elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
+                            correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
+                        elif dataset_name == "hotpot_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
+                        elif dataset_name == "truthful_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
+                        if correct:
+                            correct_list.append(1)
+                        else:
+                            correct_list.append(0)
+                    else:
+                        correct_list.append(0)
+            confidence_score = sum(correct_list) / len(correct_list)
+            if confidence_score >= 0.5:
+                y.append(1)
+            else:
+                y.append(0)
+            out_confidences.append(confidence_score)
             id += 1
     #out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
     return out_responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans

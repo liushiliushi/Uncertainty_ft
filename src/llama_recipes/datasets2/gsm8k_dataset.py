@@ -31,6 +31,28 @@ system_prompt = """You will be asked math problems. Please respond to the best o
                    Final answer: 15
                    Confidence: 0%"""
 
+system_prompt_yes = """You will be asked math problems. Please respond to the best of your ability.
+                   Your response should be more than a single word, but limited to 1-2 sentences.
+                   Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+                   Finally, please judge whether your answer is correct with "yes" or "no".
+
+                   Here are some examples:
+
+                   Question: A bag contains 5 red apples and 3 green apples. How many apples are there in total?
+                   Response: To find the total, add the red apples and green apples: 5 + 3 = 8 apples in total.
+                   Final answer: 8
+                   Correct: yes
+
+                   Question: A train travels 60 miles per hour for 3 hours. How far does it travel in total?
+                   Response: To calculate the total distance, multiply the speed by the time: 60 miles/hour * 3 hours = 180 miles.
+                   Final answer: 180
+                   Correct: yes
+
+                   Question: A box contains 8 blue marbles and 6 red marbles. How many marbles are there in total?
+                   Response: The total number of marbles is the sum of blue and red marbles: 8 + 7 = 15 marbles.
+                   Final answer: 15
+                   Correct: no"""
+
 def read_jsonl(path: str):
     with open(path) as fh:
         return [json.loads(line) for line in fh.readlines() if line]
@@ -62,6 +84,30 @@ def extract_number(text):
     else:
         # 如果没有找到数字，返回 None
         return None
+
+def get_gsm8k_dataset_yes(tokenizer, split, vllm=True):
+    path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
+    dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+
+    def apply_prompt_template(sample):
+        prompt = [{'role': 'system', 'content': system_prompt_yes},
+                  {"role": "user", "content": f"Question: {sample['question']}"},
+                  {"role": "assistant", "content": f"Response: "}
+                  ]
+        if vllm:
+            prompt = json.dumps(tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True))
+        else:
+            prompt = json.dumps(prompt)
+        return {
+            "question": sample['question'], 
+            "prompt": prompt,
+            "correct_answer": str(sample['correct_answer']),
+        }
+
+    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+
+    return dataset
+
 
 def get_gsm8k_dataset_raw(tokenizer, split, vllm=True):
     if split == 'train':
