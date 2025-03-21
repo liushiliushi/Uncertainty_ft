@@ -175,6 +175,7 @@ def main(**kwargs):
     # PEFT
     if train_config.use_peft:
         if train_config.from_peft_checkpoint:
+            print(f"Loading peft from {train_config.from_peft_checkpoint}")
             model = PeftModel.from_pretrained(model, train_config.from_peft_checkpoint, is_trainable=True)
             peft_config = model.peft_config
         else:

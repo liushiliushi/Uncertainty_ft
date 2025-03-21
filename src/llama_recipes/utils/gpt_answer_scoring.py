@@ -19,6 +19,21 @@ Your response should use the following format:
 Correct: <yes or no>
 '''
 
+PROMPT_SAME = '''Given a question and two potential answers, you need to analyze whether the two answers convey the same meaning. Respond with "yes" or "no".
+Your response should be completely based on the similarity between the two answers.
+DO NOT use your own knowledge base when do the comparison.
+
+Question:
+<QUESTION>
+LLM Response 1:
+<RESPONSE1>
+LLM Response 2:
+<RESPONSE2>
+
+Your response should use the following format:
+Correct: <yes or no>
+'''
+
 OTHER_PROMPT = '''For the next task, we are going to evaluate the correctness of the following LLM response to an answer. Please evaluate the correctness of the response on a scale of 1 to 10, where 1 is the least correct and 10 is the most correct.
 
 Question:
@@ -59,7 +74,8 @@ def normalize_answer(s):
 
 class GPTAnswerScoring():
     def __init__(self, prompt=PROMPT, try_times=3):
-        self.prompt = prompt
+        self.prompt = PROMPT
+        self.prompt_same = PROMPT_SAME
         try:
             self.openai = AzureOpenAI(
                 api_key=os.environ['OPENAI_API_KEY'],
@@ -83,6 +99,27 @@ class GPTAnswerScoring():
         
     def score(self, question, response, correct_answer):
         prompt = self.prompt.replace('<QUESTION>', question).replace('<RESPONSE>', response).replace('<CORRECT_ANSWER>', correct_answer)
+        try_time = 0
+        rsp = ""
+        while try_time < self.try_times:
+            try:
+                completion = self.openai.chat.completions.create(
+                    model=os.environ['OPENAI_DEPLOYMENT_NAME'],
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that helps people find information."},
+                        {"role": "user", "content": prompt}
+                    ],
+                )
+                rsp = completion.choices[0].message.content
+                score = self.parse_response(rsp)
+                return True if normalize_answer(score) == "yes" else False
+            except OpenAIError as e:
+                logging.error(e)
+                time.sleep(5)
+                try_time += 1
+        return None
+    def score_same(self, question, response1, response2):
+        prompt = self.prompt_same.replace('<QUESTION>', question).replace('<RESPONSE1>', response1).replace('<RESPONSE2>', response2)
         try_time = 0
         rsp = ""
         while try_time < self.try_times:

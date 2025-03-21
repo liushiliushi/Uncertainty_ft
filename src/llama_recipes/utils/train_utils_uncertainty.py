@@ -249,6 +249,7 @@ def train_chat(
     # print(f"[rank={rank}] After load model")
     # accelerator.wait_for_everyone()
     results = None
+    sys.exit(0)
 
     return results
 
@@ -339,10 +340,11 @@ def evaluation_chat(
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
-    val_metrics = compute_conf_metrics(all_y, eval_probs)
-    if train_config.use_wandb and accelerator.is_main_process:
-        plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original)
+    number = len(all_y)
+    val_metrics = compute_conf_metrics(all_y, eval_probs, number)
+    # if train_config.use_wandb and accelerator.is_main_process:
+    #     plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+    #     plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original, train_config.dataset)
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
 
@@ -367,7 +369,6 @@ def evaluation_chat(
                         'eval/ece': ece_score,
                         'eval/roc_auc': roc_auc_score,
                     }, commit=False)
-
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
 
@@ -533,25 +534,30 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     if wandb_run:
         if original == True:
-            wandb_run.log({"Testing_samples/original": wan_table})
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
         else:
-            wandb_run.log({"Testing_samples/fine-tuned": wan_table})
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
 
     number = len(y)
     print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences)
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
 
     if wandb_run:
         wandb_run.log({
-                        'test/ece_stage1': ece_score,
-                        'test/roc_auc_stage1': roc_auc_score,
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
                     }, commit=False)
 
     return ece_score, roc_auc_score

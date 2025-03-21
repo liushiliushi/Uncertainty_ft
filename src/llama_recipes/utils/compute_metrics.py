@@ -60,7 +60,7 @@ def area_under_risk_coverage_score(confids, correct):
     AURC_DISPLAY_SCALE = 1000
     return sum([(risks[i] + risks[i + 1]) * 0.5 * weights[i] for i in range(len(weights))])* AURC_DISPLAY_SCALE
 
-def plot_confidence_histogram(y_true, y_confs, score_type, acc, auroc, ece, wandb_run, original, use_annotation=True):
+def plot_confidence_histogram(y_true, y_confs, score_type, acc, auroc, ece, wandb_run, original, dataset, use_annotation=True):
 
     plt.figure(figsize=(6, 4))    
     corr_confs = [y_confs[i]*100 for i in range(len(y_confs)) if y_true[i] == 1]
@@ -116,14 +116,14 @@ def plot_confidence_histogram(y_true, y_confs, score_type, acc, auroc, ece, wand
 
     # 记录图像到WandB
     if original:
-        wandb_run.log({f"plots/original/{score_type}/auroc": wandb.Image(img)})
+        wandb_run.log({f"plots/original/{dataset}/auroc": wandb.Image(img)})
     else:
-        wandb_run.log({f"plots/fine-tuned/{score_type}/auroc": wandb.Image(img)})
+        wandb_run.log({f"plots/fine-tuned/{dataset}/auroc": wandb.Image(img)})
     plt.show()
     # plt.savefig(osp.join(visual_folder, input_file_name.replace(".json", f"_auroc_{score_type}.png")), dpi=600)
     # plt.savefig(osp.join(visual_folder, input_file_name.replace(".json", f"_auroc_{score_type}.pdf")), dpi=600)
 
-def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original):
+def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
     from netcal.presentation import ReliabilityDiagram
     n_bins = 10
     diagram = ReliabilityDiagram(n_bins)
@@ -137,20 +137,23 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original):
 
     # 记录图像到WandB
     if original:
-        wandb_run.log({f"plots/original/{score_type}/ece": wandb.Image(img)})
+        wandb_run.log({f"plots/original/{dataset}/ece": wandb.Image(img)})
     else:
-        wandb_run.log({f"plots/fine-tuned/{score_type}/ece": wandb.Image(img)})
+        wandb_run.log({f"plots/fine-tuned/{dataset}/ece": wandb.Image(img)})
     plt.show()
     #plt.savefig(osp.join(visual_folder, input_file_name.replace(".json", f"_ece_{score_type}.pdf")), dpi=600)
 
 
-def compute_conf_metrics(y_true, y_confs):
+def compute_conf_metrics(y_true, y_confs, number):
 
     result_matrics = {}
     # ACC
     accuracy = sum(y_true) / len(y_true)
+    accuracy2 = sum(y_true) / number
     print("accuracy: ", accuracy)
+    print("accuracy with none: ", accuracy2)
     result_matrics['acc'] = accuracy
+    result_matrics['acc2'] = accuracy2
 
     # use np to test if y_confs are all in [0, 1]
     assert all([x >= 0 and x <= 1 for x in y_confs]), y_confs

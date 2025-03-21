@@ -48,10 +48,11 @@ def setup_wandb(train_config, **kwargs):
         )
     from llama_recipes.configs import wandb_config as WANDB_CONFIG
     wandb_config = WANDB_CONFIG()
+    # wandb_config.update(allow_val_change=True)
     update_config(wandb_config, **kwargs)
     init_dict = dataclasses.asdict(wandb_config)
     run = wandb.init(**init_dict)
-    run.config.update(train_config)
+    run.config.update(dataclasses.asdict(train_config), allow_val_change=True)
     return run
 
 
