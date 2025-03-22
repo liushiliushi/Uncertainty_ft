@@ -151,10 +151,16 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
 
 
     def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
-                  {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response:{sample['response_clean']}"} # attention!
-                  ]
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+            ]
+        else:
+            prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+                ]
 
         matches = re.findall("Final answer: (.*)", sample['response_clean'])
         if matches:
@@ -171,10 +177,16 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
             }
 
     def apply_prompt_template_test(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
-                  {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response: "}
-                  ]
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+        else: 
+            prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
         return {
             "question": sample['question'], 
             "prompt": json.dumps(prompt),

@@ -98,7 +98,13 @@ def get_strategyqa(tokenizer, split, train_config, on_policy=False):
         dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['input']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+        else:
+            prompt = [{'role': 'system', 'content': system_prompt},
             {"role": "user", "content":  f"Question: {sample['input']}"},
             {"role": "assistant", "content": f"Response:"},
             ]
