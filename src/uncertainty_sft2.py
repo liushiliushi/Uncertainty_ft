@@ -14,6 +14,7 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     LlamaForCausalLM,
+    AutoModelForCausalLM
 )
 from accelerate import Accelerator
 from accelerate.utils import is_xpu_available
@@ -96,6 +97,7 @@ def main(**kwargs):
         train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, 
         padding_side='left'
     )
+    print(tokenizer.pad_token_id)
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # 准备数据集
@@ -153,14 +155,12 @@ def main(**kwargs):
 
 
     # 加载/初始化模型
-    use_cache = None  # accelerate 下不需要专门设置
-    model = LlamaForCausalLM.from_pretrained(
-        train_config.model_name,
+    model = AutoModelForCausalLM.from_pretrained(
+        train_config.model_name, 
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16,
         quantization_config=bnb_config,
-        use_cache=use_cache,
-        attn_implementation="sdpa" if train_config.use_fast_kernels else None,
-        device_map=None,  # accelerate 内部会处理
-        torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
+        device_map=None
     )
 
     # embedding resize

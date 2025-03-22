@@ -301,13 +301,12 @@ def evaluation_chat(
     with torch.no_grad():
         model.eval()
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
-            
+            y = batch.data.pop('y')
             output = model(**batch)
             logits = output.logits
             loss_con = output.loss
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-            y = batch.data.pop('y')
             scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':

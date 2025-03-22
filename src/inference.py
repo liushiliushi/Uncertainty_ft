@@ -86,7 +86,7 @@ def main(**kwargs):
     )
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    dataset_test = get_preprocessed_dataset2(tokenizer, train_config.dataset, 'test', train_config.on_policy)
+    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
 
     if train_config.test_original_model:
         accelerator.print("==============original test================")

@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # 定义核心调参维度
-lr_list=("5e-5" "1e-5" "3e-5")  # 新增学习率维度
-epoch_list=(2 3)
+lr_list=("3e-5")  # 新增学习率维度
+epoch_list=(3)
 loss_type_list=("brier" "sot")
 
 # 定义batch配置（训练专用GPU）

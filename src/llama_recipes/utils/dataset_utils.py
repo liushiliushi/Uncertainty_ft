@@ -28,10 +28,10 @@ def get_preprocessed_dataset(
     )
 
 def get_preprocessed_dataset2(
-    tokenizer, dataset, split, on_policy
+    tokenizer, split, train_config
 ) -> torch.utils.data.Dataset:
-    return DATASET_PREPROC[dataset](
-            tokenizer, split, on_policy
+    return DATASET_PREPROC[train_config.dataset](
+            tokenizer, split, train_config, train_config.on_policy
         )
 
 def get_dataset_yes(

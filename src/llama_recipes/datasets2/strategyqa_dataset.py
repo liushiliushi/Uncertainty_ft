@@ -90,7 +90,7 @@ def get_strategyqa_yes(tokenizer, split, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_strategyqa(tokenizer, split, on_policy=False):
+def get_strategyqa(tokenizer, split, train_config, on_policy=False):
     if split == 'train':
         print("Error! Strategy QA is not used for training.")
     else:

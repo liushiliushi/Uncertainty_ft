@@ -138,7 +138,7 @@ def get_gsm8k_dataset_raw(tokenizer, split, vllm=True):
     return dataset
 
 
-def get_gsm8k_dataset2(tokenizer, split, on_policy=False):
+def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
     if split == 'train':
         path = '../dataset/grade_school_math/data/train_response_temp=0.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')

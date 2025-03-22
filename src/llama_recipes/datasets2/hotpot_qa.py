@@ -125,7 +125,7 @@ def get_hotpot_qa_raw(tokenizer, split, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_hotpot_qa(tokenizer, split, on_policy = False):
+def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
         path = "../dataset/hotpot_qa/train_response_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')

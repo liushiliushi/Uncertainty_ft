@@ -180,7 +180,7 @@ def get_trivia_qa_raw(tokenizer, split, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_trivia_qa(tokenizer, split, on_policy = False):
+def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
         path = "../dataset/trivia_qa/train_response_temp=0.1_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
@@ -192,10 +192,16 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
     def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
-            {"role": "user", "content":  f"Question: {sample['question']}"},
-            {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
             ]
+        else:
+            prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+                ]
         matches1 = re.findall("Final answer: (.*)", sample['response_clean'])
         matches2 = re.findall("Confidence:", sample['response_clean'])
         if matches1 and matches2:
@@ -214,10 +220,16 @@ def get_trivia_qa(tokenizer, split, on_policy = False):
             }
         
     def apply_prompt_template_test(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
-            {"role": "user", "content":  f"Question: {sample['question']}"},
-            {"role": "assistant", "content": f"Response:"},
-            ]
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+        else: 
+            prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
         return {
             'question': json.dumps(sample['question']),
             "prompt": json.dumps(prompt),
