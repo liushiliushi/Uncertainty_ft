@@ -49,10 +49,10 @@ def get_dataset_cons(
 
 
 def get_raw_dataset(
-    tokenizer, dataset, split
+    tokenizer, train_config, split
 ) -> torch.utils.data.Dataset:
-    return DATASET_RAW[dataset](
-            tokenizer, split
+    return DATASET_RAW[train_config.dataset](
+            tokenizer, split, train_config
         )
 
 

@@ -101,7 +101,7 @@ def get_truthful_qa_yes(tokenizer, split, vllm=True):
 
     return dataset
 
-def get_truthful_qa_raw(tokenizer, split, vllm=True):
+def get_truthful_qa_raw(tokenizer, split, train_config, vllm=True):
     
     dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split=split)
 

@@ -1,25 +1,24 @@
 #!/bin/bash
 
 # 定义核心调参维度
-lr_list=("3e-5")  # 新增学习率维度
-epoch_list=(3)
+lr_list=("1e-5" "3e-5" "5e-5")  # 新增学习率维度
+epoch_list=(2 3)
 loss_type_list=("brier" "sot")
 
 # 定义batch配置（训练专用GPU）
 batch_configs=(
-    "12 0,1,2 3"
-    "16 0,1,2,3 4"
-    "20 0,1,2,3,4 5"
-    "24 0,1,2,3,4,5 6"
+    "16 1,2,3,4 4"
+    "20 1,2,3,4,5 5"
+    "24 1,2,3,4,5,6 6"
 )
 
 # 定义推理数据集与GPU映射
 declare -A infer_gpu_map=(
-    ["trivia_qa"]=0
+    ["trivia_qa"]=1
     ["gsm8k_dataset"]=1
-    ["strategy_qa"]=2
-    ["hotpot_qa"]=3
-    ["truthful_qa"]=4
+    ["strategy_qa"]=1
+    ["hotpot_qa"]=1
+    ["truthful_qa"]=1
 )
 
 # 计算总实验次数（增加学习率维度）
@@ -39,14 +38,14 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         run_id="lr${sanitized_lr}_e${epoch}_${loss_type}_bs${batch_size}_${timestamp}"
 
         # 构造训练参数（更新学习率）
-        train_paras="--add_loss_con True \
+        train_paras="--add_loss_con False \
                     --on_policy False \
                     --batch_size_testing 4 \
                     --do_sample False \
                     --temperature 0 \
                     --use_peft \
                     --peft_method lora \
-                    --model_name ../../meta-llama/Llama-3.1-8B-Instruct \
+                    --model_name ../../meta-llama/Qwen2.5-7B-Instruct \
                     --output_dir checkpoints/${run_id} \
                     --dataset hotpot_qa \
                     --batch_size_training=4 \
@@ -69,7 +68,7 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         echo " - 损失函数: ${loss_type}"
         echo " - 批大小: ${batch_size} (训练GPU: ${train_gpu})"
         echo "========================================================================"
-
+        wandb login fc48f63ed1a42c45b077ca8a4661e6969eb3e710
         # 执行训练
         CUDA_VISIBLE_DEVICES=$train_gpu accelerate launch \
             --num_processes $num_procs \
@@ -91,6 +90,7 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
           infer_paras="${train_paras} --dataset ${dataset}"
 
           # 启动异步推理任务
+          wandb login fc48f63ed1a42c45b077ca8a4661e6969eb3e710
           CUDA_VISIBLE_DEVICES=$infer_gpu python inference.py $infer_paras 
           pids+=($!)
           echo "启动 ${dataset} 推理，PID: $! (GPU ${infer_gpu})"

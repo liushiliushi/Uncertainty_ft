@@ -86,7 +86,9 @@ def test_yes(train_config, test_dataset, tokenizer, wandb_run, original=False):
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    print(prompts[0])
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    print(outputs[0])
     responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_yes(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
@@ -101,10 +103,10 @@ def test_yes(train_config, test_dataset, tokenizer, wandb_run, original=False):
 
     number = len(y)
     print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences)
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']

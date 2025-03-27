@@ -100,8 +100,18 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                             out_responses.append(f"Question: {prompt}\n Response:{qblock}")
 
             id += 1
-    out_confidences = [float(percent.strip().strip('%')) / 100 for percent in out_confidences]
-    return out_responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans
+    out_confidences2 = []
+    for percent_str in out_confidences:
+        # 使用正则匹配 "数字%" 格式
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            out_confidences2.append(percent)
+        else:
+            # 处理无效值（例如设为 0 或记录警告）
+            out_confidences2.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    return out_responses, out_response_cleans, questions, out_confidences2, y, y_None, confidences_None, correct_answer_cleans
 
 
 

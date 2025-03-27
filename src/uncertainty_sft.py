@@ -14,6 +14,7 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     LlamaForCausalLM,
+    AutoModelForCausalLM
 )
 from accelerate import Accelerator
 from accelerate.utils import is_xpu_available
@@ -154,14 +155,24 @@ def main(**kwargs):
 
     # 加载/初始化模型
     use_cache = None  # accelerate 下不需要专门设置
-    model = LlamaForCausalLM.from_pretrained(
-        train_config.model_name,
-        quantization_config=bnb_config,
-        use_cache=use_cache,
-        attn_implementation="sdpa" if train_config.use_fast_kernels else None,
-        device_map=None,  # accelerate 内部会处理
-        torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
-    )
+    # 加载/初始化模型
+    if "Llama-3.1" in train_config.model_name:
+        model = LlamaForCausalLM.from_pretrained(
+            train_config.model_name,
+            quantization_config=bnb_config,
+            use_cache=use_cache,
+            attn_implementation="sdpa" if train_config.use_fast_kernels else None,
+            device_map=None,  # accelerate 内部会处理
+            torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            train_config.model_name, 
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            quantization_config=bnb_config,
+            device_map=None
+        )
 
     # embedding resize
     if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:

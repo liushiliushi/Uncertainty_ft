@@ -140,8 +140,8 @@ def train_chat(
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
                 # TODO
-                # print(batch['input_ids'].shape[1])
-                if batch['input_ids'].shape[1] > 800:
+                print(batch['input_ids'].shape[1])
+                if batch['input_ids'].shape[1] > 350:
                     continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
@@ -523,7 +523,7 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
@@ -559,7 +559,7 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
                         f'test/score_{train_config.dataset}': score,
                     }, commit=False)
 
-    return ece_score, roc_auc_score
+    return ece_score, roc_auc_score, val_metrics['acc2']
 
 
 

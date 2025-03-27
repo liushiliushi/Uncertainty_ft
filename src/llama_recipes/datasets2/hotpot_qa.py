@@ -100,14 +100,20 @@ def get_hotpot_qa_yes(tokenizer, split, vllm=True):
     return dataset
     
 
-def get_hotpot_qa_raw(tokenizer, split, vllm=True):
+def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:100]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:10000]', trust_remote_code=True)
     elif split == "validation":
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:10]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:1500]', trust_remote_code=True)
     def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt},
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"}
+            ]
+        else:
+            prompt = [{'role': 'system', 'content': system_prompt},
                   {"role": "user", "content": f"Question: {sample['question']}"},
                   {"role": "assistant", "content": f"Response:"}
                   ]
@@ -127,7 +133,12 @@ def get_hotpot_qa_raw(tokenizer, split, vllm=True):
 
 def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
-        path = "../dataset/hotpot_qa/train_response_temp=0_10000.jsonl"
+        if "Ministral" in train_config.model_name:
+            path = "../dataset/hotpot_qa/train_ministral_temp=0_10000.jsonl"
+        elif "Llama-3.1" in train_config.model_name:
+            path = "../dataset/hotpot_qa/train_llama_temp=0_10000.jsonl"
+        elif "Qwen" in train_config.model_name:
+            path = "../dataset/hotpot_qa/train_Qwen_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
@@ -184,7 +195,11 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
     def tokenize_add_label(sample):
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
         prompt = torch.cat((prompt, torch.tensor([220]))) # manually add white space because the tokenizer will automatically remove the white space ate the end of the sentence
-        response = torch.tensor(tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False))
+
+        if "Ministral" in train_config.model_name:
+            response = torch.tensor(tokenizer.encode(sample['prompt'][1]['content'], add_special_tokens=False))
+        else:
+            response = torch.tensor(tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False))
         sample = {
             "input_ids": prompt,
             "attention_mask" : [1] * (len(prompt)),

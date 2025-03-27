@@ -7,6 +7,7 @@ import os
 import dataclasses
 import fire
 import random
+import numpy as np
 import torch.optim as optim
 from peft import get_peft_model, PeftModel
 from torch.optim.lr_scheduler import StepLR
@@ -62,16 +63,9 @@ def main(**kwargs):
     train_config = TRAIN_CONFIG()
     update_config(train_config, **kwargs)
     
-    # 设置随机种子
-    if is_xpu_available():
-        torch.xpu.manual_seed(train_config.seed)
-    else:
-        torch.manual_seed(train_config.seed)
-    random.seed(train_config.seed)
-
-    # 若有可用 GPU，设置一下可见设备（如果你使用 accelerate launcher，通常无需手动设置）
-    # os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
-
+    # 设置随机种子列表
+    seeds = [42, 123, 456, 789, 1024]
+    
     accelerator = Accelerator()
 
     # 只有在主进程时才进行 wandb 初始化
@@ -88,13 +82,63 @@ def main(**kwargs):
 
     dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
 
+    # 存储每次运行的结果
+    test_ece_scores = []
+    test_auroc_scores = []
+    test_acc2_scores = []
+    
     if train_config.test_original_model:
         accelerator.print("==============original test================")
-        test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+        for seed in seeds:
+            if is_xpu_available():
+                torch.xpu.manual_seed(seed)
+            else:
+                torch.manual_seed(seed)
+            random.seed(seed)
+            
+            accelerator.print(f"Testing with seed {seed}")
+            test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
     if accelerator.is_main_process:
-        print("==============finetuned test2stage================")
-        test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=False)
+        accelerator.print("==============finetuned test2stage================")
+        for seed in seeds:
+            if is_xpu_available():
+                torch.xpu.manual_seed(seed)
+            else:
+                torch.manual_seed(seed)
+            random.seed(seed)
+            
+            accelerator.print(f"Testing with seed {seed}")
+            test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=False)
+            test_ece_scores.append(test_ece)
+            test_auroc_scores.append(test_auroc)
+            test_acc2_scores.append(test_acc2)
+
+        # 计算平均值和方差
+        mean_ece = np.mean(test_ece_scores)
+        mean_auroc = np.mean(test_auroc_scores)
+        mean_acc2 = np.mean(test_acc2_scores)
+        var_ece = np.var(test_ece_scores)
+        var_auroc = np.var(test_auroc_scores)
+        var_acc2 = np.var(test_acc2_scores)
+        std_ece = np.std(test_ece_scores)
+        std_auroc = np.std(test_auroc_scores)
+        std_acc2 = np.std(test_acc2_scores)
+        
+
+        # 记录到wandb
+        if wandb_run:
+            wandb_run.log({
+                f'test/mean_ece_{train_config.dataset}': mean_ece,
+                f'test/mean_auroc_{train_config.dataset}': mean_auroc,
+                f'test/mean_acc2_{train_config.dataset}': mean_acc2,
+                f'test/var_ece_{train_config.dataset}': var_ece,
+                f'test/var_auroc_{train_config.dataset}': var_auroc,
+                f'test/var_acc2_{train_config.dataset}': var_acc2,
+                f'test/std_ece_{train_config.dataset}': std_ece,
+                f'test/std_auroc_{train_config.dataset}': std_auroc,
+                f'test/std_acc2_{train_config.dataset}': std_acc2,
+            })
 
 
 if __name__ == "__main__":

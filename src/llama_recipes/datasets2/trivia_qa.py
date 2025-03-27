@@ -153,7 +153,7 @@ def get_trivia_qa_yes(tokenizer, split, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_trivia_qa_raw(tokenizer, split, vllm=True):
+def get_trivia_qa_raw(tokenizer, split, train_config, vllm=True):
     
     if split == 'train':
         dataset = datasets.load_dataset("mandarjoshi/trivia_qa", "rc.web.nocontext", cache_dir="../dataset/Trivia_qa_raw", split='train[:10000]')
