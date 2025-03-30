@@ -111,20 +111,36 @@ def train_chat(
     best_val_loss = float("inf")
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
-    # Get the ids of the numbers from 0 to 100
+    # Get the token sequences for numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 80,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample": True,
-        "pad_token_id": tokenizer.eos_token_id,
-    }
+    number_token_sequences = [tokenizer.encode(number, add_special_tokens=False) for number in numbers]
     
+    # Create a mapping from number to its token sequence length
+    number_token_lengths = [len(tokens) for tokens in number_token_sequences]
+    max_token_length = max(number_token_lengths)
+    
+    # Create a mapping from number to its token sequence with padding
+    number_to_tokens = {}
+    for num, tokens in zip(numbers, number_token_sequences):
+        if max_token_length > 1:
+            # For numbers that need padding
+            if len(tokens) < 3:
+                # Add % and \n tokens to make it 3 tokens
+                padded_tokens = tokens + [tokenizer.encode('%', add_special_tokens=False)[0]] + [tokenizer.encode('\n', add_special_tokens=False)[0]]
+                padded_tokens = padded_tokens[:3]  # Ensure exactly 3 tokens
+                number_to_tokens[num] = padded_tokens
+            else:
+                # For numbers that already have 3 or more tokens, just take the first 3
+                number_to_tokens[num] = tokens[:3]
+        else:
+            # If max_token_length is 1, just use the original tokens
+            number_to_tokens[num] = tokens
+
+    print("----------------------------")
+    print("Padded token sequences:")
+    for num, tokens in number_to_tokens.items():
+        print(f"{num}: {tokens}")
+
     # Start the training loop
     for epoch in range(train_config.num_epochs):
         for param_group in optimizer.param_groups:
@@ -152,27 +168,65 @@ def train_chat(
                 y = batch.data.pop('y')
 
                 with autocast():
-                    # get the
-                    output = model(**batch)
-                    logits = output.logits
-                    loss_con = output.loss
+                    # Generate tokens based on max_token_length
+                    output = model.generate(
+                        **batch,
+                        max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                        do_sample=False,  # Use greedy decoding to get the most likely tokens
+                        pad_token_id=tokenizer.eos_token_id,
+                        return_dict_in_generate=True,
+                        output_scores=True
+                    )
+                    # Get the logits for the generated tokens
+                    logits = torch.stack(output.scores, dim=1)  # shape: [batch_size, max_token_length, vocab_size]
+                    loss_con = output.loss if hasattr(output, 'loss') else torch.tensor(0.0, requires_grad=True).to(model.device)
 
-                num_token = logits[:,-1,:] # get the logit of the confidence token
+                # Get the logits for the generated tokens
+                num_tokens = logits  # shape: [batch_size, max_token_length, vocab_size]
                 del logits
+
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':
-                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                    num_conf = F.softmax(num_conf, dim=1)
-                    # compute the loss
+                    # Create a tensor to store the probabilities for each number
+                    num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
+                    
+                    # For each number, calculate the probability of its token sequence
+                    for num in range(101):
+                        tokens = number_to_tokens[str(num)]
+                        # Calculate the probability of the token sequence
+                        token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
+                        for i, token in enumerate(tokens):
+                            if i < max_token_length:  # Use max_token_length instead of fixed 3
+                                token_logits = num_tokens[:, i, token]
+                                token_log_probs  += F.log_softmax(token_logits, dim=0)  # Multiply probabilities
+                        num_conf[:, num] = token_log_probs 
+                    
+                    # Normalize the probabilities
+                    num_conf = num_conf / num_conf.sum(dim=1, keepdim=True)
+                    
+                    # Compute the loss
                     y_expanded = y.expand(y.shape[0], 101)
                     squared_differences = (y_expanded - scores) ** 2
                     loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
                 elif train_config.loss_type == 'sot':
-                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    # Create a tensor to store the log probabilities for each number
+                    num_log_probs = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
+                    
+                    # For each number, calculate the log probability of its token sequence
+                    for num in range(101):
+                        tokens = number_to_tokens[str(num)]
+                        # Calculate the log probability of the token sequence
+                        token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
+                        for i, token in enumerate(tokens):
+                            if i < max_token_length:  # Use max_token_length instead of fixed 3
+                                token_logits = num_tokens[:, i, token]
+                                token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
+                        num_log_probs[:, num] = token_log_probs
+                    
                     smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                     smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                    loss_cal = -torch.sum(num_log_probs * smoothed, dim=1).mean()
                 if train_config.add_loss_con:
                     loss = loss_con + loss_cal
                 else:
@@ -283,10 +337,39 @@ def evaluation_chat(
     eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
-    # Get the ids of the numbers from 0 to 100
+    # Get the token sequences for numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
+    number_token_sequences = [tokenizer.encode(number, add_special_tokens=False) for number in numbers]
+    
+    # Create a mapping from number to its token sequence length
+    number_token_lengths = [len(tokens) for tokens in number_token_sequences]
+    max_token_length = max(number_token_lengths)
+    
+    # Create a mapping from number to its token sequence with padding
+    number_to_tokens = {}
+    for num, tokens in zip(numbers, number_token_sequences):
+        if max_token_length > 1:
+            # For numbers that need padding
+            if len(tokens) < 3:
+                # Add % and \n tokens to make it 3 tokens
+                padded_tokens = tokens + [tokenizer.encode('%', add_special_tokens=False)[0]] + [tokenizer.encode('\n', add_special_tokens=False)[0]]
+                padded_tokens = padded_tokens[:3]  # Ensure exactly 3 tokens
+                number_to_tokens[num] = padded_tokens
+            else:
+                # For numbers that already have 3 or more tokens, just take the first 3
+                number_to_tokens[num] = tokens[:3]
+        else:
+            # If max_token_length is 1, just use the original tokens
+            number_to_tokens[num] = tokens
+
+    print("----------------------------")
+    print("Padded token sequences:")
+    for num, tokens in number_to_tokens.items():
+        print(f"{num}: {tokens}")
+
+    # Create a mapping from token sequence to number (for reverse lookup)
+    tokens_to_number = {tuple(tokens): num for num, tokens in number_to_tokens.items()}
+    
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 100,
@@ -302,28 +385,65 @@ def evaluation_chat(
         model.eval()
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
-            output = model(**batch)
-            logits = output.logits
-            loss_con = output.loss
-            num_token = logits[:,-1,:] # get the logit of the confidence token
+            # Generate tokens based on max_token_length
+            output = model.generate(
+                **batch,
+                max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                do_sample=False,  # Use greedy decoding to get the most likely tokens
+                pad_token_id=tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+                output_scores=True
+            )
+            # Get the logits for the generated tokens
+            logits = torch.stack(output.scores, dim=1)  # shape: [batch_size, max_token_length, vocab_size]
+            loss_con = output.loss if hasattr(output, 'loss') else torch.tensor(0.0).to(model.device)
+
+            # Get the logits for the generated tokens
+            num_tokens = logits  # shape: [batch_size, max_token_length, vocab_size]
             del logits
+
             scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
-                # compute the loss
+                # Create a tensor to store the probabilities for each number
+                num_conf = torch.zeros(y.shape[0], 101).to(model.device)
+                
+                # For each number, calculate the probability of its token sequence
+                for num in range(101):
+                    tokens = number_to_tokens[str(num)]
+                    # Calculate the probability of the token sequence
+                    token_log_probs = torch.zeros(y.shape[0]).to(model.device)
+                    for i, token in enumerate(tokens):
+                        if i < max_token_length:  # Use max_token_length instead of fixed 3
+                            token_logits = num_tokens[:, i, token]
+                            token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
+                    num_log_probs[:, num] = token_log_probs
+                
+                # Normalize the probabilities
+                num_conf = num_conf / num_conf.sum(dim=1, keepdim=True)
+                
+                # Compute the loss
                 y_expanded = y.expand(y.shape[0], 101)
                 squared_differences = (y_expanded - scores) ** 2
                 loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
             elif train_config.loss_type == 'sot':
-                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                # Create a tensor to store the log probabilities for each number
+                num_log_probs = torch.zeros(y.shape[0], 101).to(model.device)
+                
+                # For each number, calculate the log probability of its token sequence
+                for num in range(101):
+                    tokens = number_to_tokens[str(num)]
+                    # Calculate the log probability of the token sequence
+                    token_log_probs = torch.zeros(y.shape[0]).to(model.device)
+                    for i, token in enumerate(tokens):
+                        if i < max_token_length:  # Use max_token_length instead of fixed 3
+                            token_logits = num_tokens[:, i, token]
+                            token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
+                    num_log_probs[:, num] = token_log_probs
+                
                 smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                 smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
-            if train_config.save_metrics:
-                val_step_loss.append(loss.detach().float().item())
-                val_step_perplexity.append(float(torch.exp(loss.detach().float())))
+                loss_cal = -torch.sum(num_log_probs * smoothed, dim=1).mean()
 
             if train_config.add_loss_con:
                 loss = loss_con + loss_cal
@@ -334,7 +454,9 @@ def evaluation_chat(
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            
+            # Calculate probabilities for evaluation metrics
+            probs = torch.argmax(num_log_probs, dim=1) * 0.01
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
