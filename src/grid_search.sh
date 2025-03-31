@@ -73,6 +73,8 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         CUDA_VISIBLE_DEVICES=$train_gpu accelerate launch \
             --num_processes $num_procs \
             --mixed_precision bf16 \
+            --use_deepspeed \
+            --deepspeed_config_file llama_recipes/configs/ds_config.json \
             uncertainty_sft.py $train_paras
         # 并行推理（固定GPU分配）
         echo "启动并行推理，GPU分配："

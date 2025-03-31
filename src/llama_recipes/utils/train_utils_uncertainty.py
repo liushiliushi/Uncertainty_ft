@@ -169,17 +169,29 @@ def train_chat(
 
                 with autocast():
                     # Generate tokens based on max_token_length
-                    output = model.generate(
-                        **batch,
-                        max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
-                        do_sample=False,  # Use greedy decoding to get the most likely tokens
-                        pad_token_id=tokenizer.eos_token_id,
-                        return_dict_in_generate=True,
-                        output_scores=True
-                    )
+                    if hasattr(model, "module"):
+                        output = model.module.generate(
+                            **batch,
+                            max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                            do_sample=False,  # Use greedy decoding to get the most likely tokens
+                            pad_token_id=tokenizer.eos_token_id,
+                            return_dict_in_generate=True,
+                            output_scores=True
+                        )
+                        output2 = model.module(**batch)
+                    else:
+                        output = model.generate(
+                            **batch,
+                            max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                            do_sample=False,  # Use greedy decoding to get the most likely tokens
+                            pad_token_id=tokenizer.eos_token_id,
+                            return_dict_in_generate=True,
+                            output_scores=True
+                        )
+                        output2 = model(**batch)
                     # Get the logits for the generated tokens
                     logits = torch.stack(output.scores, dim=1)  # shape: [batch_size, max_token_length, vocab_size]
-                    loss_con = output.loss if hasattr(output, 'loss') else torch.tensor(0.0, requires_grad=True).to(model.device)
+                    loss_con = output2.loss if hasattr(output, 'loss') else torch.tensor(0.0, requires_grad=True).to(model.device)
 
                 # Get the logits for the generated tokens
                 num_tokens = logits  # shape: [batch_size, max_token_length, vocab_size]
@@ -190,28 +202,28 @@ def train_chat(
                 if train_config.loss_type == 'brier':
                     # Create a tensor to store the probabilities for each number
                     num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
-                    
                     # For each number, calculate the probability of its token sequence
                     for num in range(101):
                         tokens = number_to_tokens[str(num)]
                         # Calculate the probability of the token sequence
-                        token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
+                        token_log_probs = torch.ones(y.shape[0], requires_grad=True).to(model.device)
                         for i, token in enumerate(tokens):
-                            if i < max_token_length:  # Use max_token_length instead of fixed 3
-                                token_logits = num_tokens[:, i, token]
-                                token_log_probs  += F.log_softmax(token_logits, dim=0)  # Multiply probabilities
+                            log_probs = num_tokens[:, i, :] 
+                            log_probs = F.softmax(log_probs, dim=-1) 
+                            token_log_probs *= log_probs[:, token]
                         num_conf[:, num] = token_log_probs 
                     
                     # Normalize the probabilities
-                    num_conf = num_conf / num_conf.sum(dim=1, keepdim=True)
-                    
+                    num_conf = F.softmax(num_conf, dim=1)
+                    print(torch.argmax(num_conf, dim=1))
+                    print(y.squeeze())
                     # Compute the loss
                     y_expanded = y.expand(y.shape[0], 101)
                     squared_differences = (y_expanded - scores) ** 2
                     loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
                 elif train_config.loss_type == 'sot':
                     # Create a tensor to store the log probabilities for each number
-                    num_log_probs = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
+                    num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
                     
                     # For each number, calculate the log probability of its token sequence
                     for num in range(101):
@@ -219,14 +231,15 @@ def train_chat(
                         # Calculate the log probability of the token sequence
                         token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
                         for i, token in enumerate(tokens):
-                            if i < max_token_length:  # Use max_token_length instead of fixed 3
-                                token_logits = num_tokens[:, i, token]
-                                token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
-                        num_log_probs[:, num] = token_log_probs
-                    
+                            log_probs = num_tokens[:, i, :] 
+                            log_probs = F.log_softmax(log_probs, dim=-1) 
+                            token_log_probs += log_probs[:, token]
+                        num_conf[:, num] = token_log_probs
+                    print(torch.argmax(num_conf, dim=1))
+                    print(y.squeeze())
                     smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                     smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                    loss_cal = -torch.sum(num_log_probs * smoothed, dim=1).mean()
+                    loss_cal = -torch.sum(num_conf * smoothed, dim=1).mean()
                 if train_config.add_loss_con:
                     loss = loss_con + loss_cal
                 else:
@@ -282,6 +295,7 @@ def train_chat(
                             model = model.to(dtype=torch.float16)
                             save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                             accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                            sys.exit(0)
                         else:
                             save_peft_checkpoint(model, train_config.output_dir)
                             accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
@@ -303,7 +317,7 @@ def train_chat(
     # print(f"[rank={rank}] After load model")
     # accelerator.wait_for_everyone()
     results = None
-    sys.exit(0)
+    
 
     return results
 
@@ -386,17 +400,30 @@ def evaluation_chat(
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
             # Generate tokens based on max_token_length
-            output = model.generate(
-                **batch,
-                max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
-                do_sample=False,  # Use greedy decoding to get the most likely tokens
-                pad_token_id=tokenizer.eos_token_id,
-                return_dict_in_generate=True,
-                output_scores=True
-            )
+            if hasattr(model, "module"):
+                output = model.module.generate(
+                    **batch,
+                    max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                    do_sample=False,  # Use greedy decoding to get the most likely tokens
+                    pad_token_id=tokenizer.eos_token_id,
+                    return_dict_in_generate=True,
+                    output_scores=True
+                )
+                output2 = model.module(**batch)
+            else:
+                output = model.generate(
+                        **batch,
+                    max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
+                    do_sample=False,  # Use greedy decoding to get the most likely tokens
+                    pad_token_id=tokenizer.eos_token_id,
+                    return_dict_in_generate=True,
+                    output_scores=True
+                )
+                output2 = model(**batch)
+
             # Get the logits for the generated tokens
             logits = torch.stack(output.scores, dim=1)  # shape: [batch_size, max_token_length, vocab_size]
-            loss_con = output.loss if hasattr(output, 'loss') else torch.tensor(0.0).to(model.device)
+            loss_con = output2.loss if hasattr(output, 'loss') else torch.tensor(0.0).to(model.device)
 
             # Get the logits for the generated tokens
             num_tokens = logits  # shape: [batch_size, max_token_length, vocab_size]
@@ -405,45 +432,46 @@ def evaluation_chat(
             scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':
-                # Create a tensor to store the probabilities for each number
-                num_conf = torch.zeros(y.shape[0], 101).to(model.device)
-                
-                # For each number, calculate the probability of its token sequence
-                for num in range(101):
-                    tokens = number_to_tokens[str(num)]
-                    # Calculate the probability of the token sequence
-                    token_log_probs = torch.zeros(y.shape[0]).to(model.device)
-                    for i, token in enumerate(tokens):
-                        if i < max_token_length:  # Use max_token_length instead of fixed 3
-                            token_logits = num_tokens[:, i, token]
-                            token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
-                    num_log_probs[:, num] = token_log_probs
-                
-                # Normalize the probabilities
-                num_conf = num_conf / num_conf.sum(dim=1, keepdim=True)
-                
-                # Compute the loss
-                y_expanded = y.expand(y.shape[0], 101)
-                squared_differences = (y_expanded - scores) ** 2
-                loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                    # Create a tensor to store the probabilities for each number
+                    num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
+                    # For each number, calculate the probability of its token sequence
+                    for num in range(101):
+                        tokens = number_to_tokens[str(num)]
+                        # Calculate the probability of the token sequence
+                        token_log_probs = torch.ones(y.shape[0], requires_grad=True).to(model.device)
+                        for i, token in enumerate(tokens):
+                            log_probs = num_tokens[:, i, :] 
+                            log_probs = F.softmax(log_probs, dim=-1) 
+                            token_log_probs *= log_probs[:, token]
+                        num_conf[:, num] = token_log_probs 
+                    
+                    # Normalize the probabilities
+                    num_conf = F.softmax(num_conf, dim=1)
+                    print(torch.argmax(num_conf, dim=1))
+                    print(y.squeeze())
+                    # Compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
             elif train_config.loss_type == 'sot':
                 # Create a tensor to store the log probabilities for each number
-                num_log_probs = torch.zeros(y.shape[0], 101).to(model.device)
-                
+                num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
+                    
                 # For each number, calculate the log probability of its token sequence
                 for num in range(101):
                     tokens = number_to_tokens[str(num)]
                     # Calculate the log probability of the token sequence
-                    token_log_probs = torch.zeros(y.shape[0]).to(model.device)
+                    token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
                     for i, token in enumerate(tokens):
-                        if i < max_token_length:  # Use max_token_length instead of fixed 3
-                            token_logits = num_tokens[:, i, token]
-                            token_log_probs += F.log_softmax(token_logits, dim=0)  # Add log probabilities
-                    num_log_probs[:, num] = token_log_probs
-                
+                        log_probs = num_tokens[:, i, :] 
+                        log_probs = F.log_softmax(log_probs, dim=-1) 
+                        token_log_probs += log_probs[:, token]
+                    num_conf[:, num] = token_log_probs
+                print(torch.argmax(num_conf, dim=1))
+                print(y.squeeze())
                 smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                 smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                loss_cal = -torch.sum(num_log_probs * smoothed, dim=1).mean()
+                loss_cal = -torch.sum(num_conf * smoothed, dim=1).mean()
 
             if train_config.add_loss_con:
                 loss = loss_con + loss_cal
