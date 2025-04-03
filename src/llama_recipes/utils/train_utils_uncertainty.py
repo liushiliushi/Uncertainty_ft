@@ -25,7 +25,7 @@ from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level
 from vllm import LLM, SamplingParams
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
@@ -518,9 +518,9 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     if train_config.test_linguistic:
-        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
-    else:
         responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    else:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 

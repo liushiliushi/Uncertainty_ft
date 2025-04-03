@@ -201,8 +201,6 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
     def apply_prompt_template_test(sample):
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
-        else:
-            system_prompt = system_prompt
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},
