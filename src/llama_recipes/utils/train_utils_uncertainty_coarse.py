@@ -63,18 +63,6 @@ def profile(cfg, accelerator=None):
     else:
         yield None
 
-from transformers import LogitsProcessor
-
-class AllowedTokensLogitsProcessor(LogitsProcessor):
-    def __init__(self, allowed_token_ids):
-        self.allowed_token_ids = set(allowed_token_ids)
-
-    def __call__(self, input_ids, scores):
-        """ 在 logits 计算后，将不在 allowed_token_ids 中的 token 设为 -inf """
-        mask = torch.full_like(scores, float('-inf'))  # 所有 token 先设置为 -inf
-        mask[:, list(self.allowed_token_ids)] = scores[:, list(self.allowed_token_ids)]  # 允许的 token 保持原 logits
-        return mask
-
 def train_chat(
     model,
     train_dataloader,
@@ -122,59 +110,44 @@ def train_chat(
     best_val_loss = float("inf")
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
-    # Get the token sequences for numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    number_token_sequences = [tokenizer.encode(number, add_special_tokens=False) for number in numbers]
-    
-    # Create a mapping from number to its token sequence length
-    number_token_lengths = [len(tokens) for tokens in number_token_sequences]
-    max_token_length = max(number_token_lengths)
-    
-    # Create a mapping from number to its token sequence with padding
-    number_to_tokens = {}
-    for num, tokens in zip(numbers, number_token_sequences):
-        if max_token_length > 1:
-            # For numbers that need padding
-            if len(tokens) < 3:
-                # Add % and \n tokens to make it 3 tokens
-                padded_tokens = tokens + [tokenizer.encode('%', add_special_tokens=False)[0]] + [tokenizer.encode('\n', add_special_tokens=False)[0]]
-                padded_tokens = padded_tokens[:3]  # Ensure exactly 3 tokens
-                number_to_tokens[num] = padded_tokens
-            else:
-                # For numbers that already have 3 or more tokens, just take the first 3
-                number_to_tokens[num] = tokens[:3]
-        else:
-            # If max_token_length is 1, just use the original tokens
-            number_to_tokens[num] = tokens
-
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(10)]
+    token_ids1 = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    token_ids2 = [tokenizer.encode('0', add_special_tokens=False)[0], tokenizer.eos_token_id]
     print("----------------------------")
-    print("Padded token sequences:")
-    for num, tokens in number_to_tokens.items():
-        print(f"{num}: {tokens}")
-
-    num_indices = torch.tensor(
-                        [number_to_tokens[str(num)] for num in range(101)],
-                        dtype=torch.long,  # 必须为long类型
-                        device=model.device
-                    ).requires_grad_(False)  # 注意：索引不需要梯度，但需要设备一致
+    print(token_ids1)
+    num_indices1 = torch.tensor(token_ids1).to(model.device)
+    num_indices2 = torch.tensor(token_ids2).to(model.device)
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 80,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0.1,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
     
-
     # Start the training loop
     for epoch in range(train_config.num_epochs):
         for param_group in optimizer.param_groups:
             print(f"Current learning rate: {param_group['lr']}")
+        # stop when the maximum number of training steps is reached
         if max_steps_reached:
             break
         epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace:
+        with MemoryTrace() as memtrace:  # track the memory usage
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
-            for step, batch in enumerate(pbar):
-                if batch['input_ids'].shape[1] > 350:
-                    continue
+            for step, batch in enumerate(pbar): 
+                # TODO
+                # print(batch['input_ids'].shape[1])
+                # if batch['input_ids'].shape[1] > 350:
+                #     continue
                 total_train_steps += 1
+                # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
                     max_steps_reached = True
                     accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
@@ -182,97 +155,36 @@ def train_chat(
                 y = batch.data.pop('y')
 
                 with autocast():
-                    # Define allowed tokens
-                    allowed_tokens = []
-                    # Add digits 0-9
-                    for i in range(10):
-                        allowed_tokens.append(tokenizer.encode(str(i), add_special_tokens=False)[0])
-                    # Add % and \n
-                    allowed_tokens.append(tokenizer.encode('%', add_special_tokens=False)[0])
-                    allowed_tokens.append(tokenizer.encode('\n', add_special_tokens=False)[0])
-                    # allowed_tokens = torch.tensor(allowed_tokens, device=model.device)
-                    
-                    processor = AllowedTokensLogitsProcessor(allowed_tokens)
-                    # Create a mask for allowed tokens
-                    vocab_size = model.config.vocab_size
-                    allowed_mask = torch.zeros(vocab_size, dtype=torch.bool, device=model.device)
-                    allowed_mask[allowed_tokens] = True
-                    
-                    # First forward pass with original input
+                    # get the
                     output1 = model(**batch)
                     logits1 = output1.logits
                     loss_con = output1.loss
-                    
-                    # Second forward pass with digit 1 appended
-                    digit_one_token = tokenizer.encode('1', add_special_tokens=False)[0]
-                    new_input_ids = torch.cat([batch['input_ids'], 
-                                            torch.full((batch['input_ids'].shape[0], 1), digit_one_token, device=model.device)], dim=1)
-                    new_attention_mask = torch.cat([batch['attention_mask'], 
-                                                 torch.ones((batch['attention_mask'].shape[0], 1), device=model.device)], dim=1)
-                    output2 = model(input_ids=new_input_ids, attention_mask=new_attention_mask)
-                    logits2 = output2.logits
-                    
-                    # Get logits for the first token
-                    output = model.generate(
-                            **batch,
-                            max_new_tokens=3,
-                            num_beams=11,
-                            early_stopping=True,
-                            logits_processor=[processor]
-                        )
-                    first_token_logits = output.logits[:, -1, :]  # [batch_size, vocab_size]
-                    
-                    # Calculate probabilities for each number (0-100)
-                    sequence_probs = torch.zeros(batch['input_ids'].shape[0], 101).to(model.device)  # [batch_size, 101]
-                    
-                    # For each number, calculate its sequence probability
-                    for num in range(101):
-                        tokens = number_to_tokens[str(num)]
-                        # Calculate probability for this sequence
-                        for b in range(batch['input_ids'].shape[0]):
-                            prob = 1.0
-                            current_input = batch['input_ids'][b].clone()
-                            current_attention = batch['attention_mask'][b].clone()
-                            
-                            # Calculate probability for each token in the sequence
-                            for t, token_id in enumerate(tokens):
-                                if t == 0:
-                                    # First token uses the original logits
-                                    logits = first_token_logits[b]
-                                else:
-                                    # For subsequent tokens, we need to run the model with previous tokens
-                                    new_input = torch.cat([current_input, torch.tensor([token_id], device=model.device)])
-                                    new_attention = torch.cat([current_attention, torch.tensor([1], device=model.device)])
-                                    new_output = model(input_ids=new_input.unsqueeze(0), attention_mask=new_attention.unsqueeze(0))
-                                    logits = new_output.logits[0, -1, :]
-                                
-                                # Apply allowed tokens mask to logits
-                                masked_logits = logits.clone()
-                                masked_logits[~allowed_mask] = float('-inf')
-                                prob *= F.softmax(masked_logits, dim=-1)[token_id]
-                                
-                                # Update input for next token
-                                current_input = new_input
-                                current_attention = new_attention
-                            
-                            sequence_probs[b, num] = prob
-                    
-                    # Normalize probabilities
-                    sequence_probs = sequence_probs / sequence_probs.sum(dim=1, keepdim=True)
-                    
-                    # Calculate Brier loss
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
-                    y_expanded = y.expand(y.shape[0], 101)
-                    squared_differences = (y_expanded - scores) ** 2
-                    loss_cal = torch.mean(torch.sum(sequence_probs * squared_differences, dim=1))
-                    
-                    loss_con = output.loss if hasattr(output, 'loss') else torch.tensor(0.0, requires_grad=True).to(model.device)
-                    
-                    if train_config.add_loss_con:
-                        loss = loss_con + loss_cal
-                    else:
-                        loss = loss_cal
 
+                num_token1 = logits1[:,-1,:] # get the logit of the confidence token
+                del logits1
+                scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
+
+                if train_config.loss_type == 'brier':
+                    num_conf1 = torch.index_select(num_token1, 1, num_indices1.squeeze(0)) # take out the logit of 0-9+1
+                    num_conf1 = F.softmax(num_conf1, dim=1)
+                    # compute the loss
+                    # num_conf1[:,10] *= num_conf2[:,0]
+                    # num_conf1[:,1] *= num_conf2[:,1]
+                    y_expanded = y.expand(y.shape[0], 10)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token1, dim=1), 1, num_indices1.squeeze(0))
+                    # print(norm_logit)
+                    # print(torch.argmax(norm_logit, dim=1))
+                    # print(y.squeeze())
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
@@ -284,23 +196,20 @@ def train_chat(
                             'train/step': epoch * len(train_dataloader) + step,
                             'train/loss': loss.detach().float(),
                             'train/loss_con': loss_con.detach().float(),
-                            'train/loss_cal': loss_cal.detach().float()
+                                'train/loss_cal': loss_cal.detach().float()
                         })
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
 
-                    torch.cuda.empty_cache()
+                    # torch.cuda.empty_cache()
 
         epoch_end_time = time.perf_counter()-epoch_start_time
         epoch_times.append(epoch_end_time)
         avg_loss = total_loss / len(train_dataloader)
         avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
 
-
         # Update the learning rate as needed
         lr_scheduler.step()
-
-
         if train_config.run_validation:
             eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                 model,
@@ -312,13 +221,16 @@ def train_chat(
             )
             # if eval_epoch_loss < best_val_loss:
             if True:
-                best_val_loss = eval_epoch_loss
+                if accelerator.is_main_process:
+                    best_val_loss = eval_epoch_loss
                 if train_config.save_model and accelerator.is_main_process:
                     if train_config.use_peft:
                         if hasattr(model, "module"):
                             model = model.module
                         if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                            model = model.to(dtype=torch.float32)
                             model = model.merge_and_unload()
+                            model = model.to(dtype=torch.float16)
                             save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                             accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
                             sys.exit(0)
@@ -329,24 +241,10 @@ def train_chat(
                         save_model_checkpoint(model, train_config.output_dir)
                         accelerator.print(f"Model is saved in {train_config.output_dir} directory")
 
-    # accelerator.wait_for_everyone()
-    # model.cpu() 
-    # del model
-    # torch.cuda.empty_cache() 
-    # rank = accelerator.process_index
-    # print(f"[rank={rank}] Before load model")
-    # if accelerator.is_main_process:
-    # accelerator.print("==============finetuned test2stage================")
-        
-    # test_ece, test_auroc = test_vllm(train_config, test_dataloader, tokenizer, wandb_run, original=False)
-    # rank = accelerator.process_index
-    # print(f"[rank={rank}] After load model")
-    # accelerator.wait_for_everyone()
     results = None
-    
+   
 
     return results
-
 
 def evaluation_chat(
     model,
@@ -377,39 +275,10 @@ def evaluation_chat(
     eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
-    # Get the token sequences for numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    number_token_sequences = [tokenizer.encode(number, add_special_tokens=False) for number in numbers]
-    
-    # Create a mapping from number to its token sequence length
-    number_token_lengths = [len(tokens) for tokens in number_token_sequences]
-    max_token_length = max(number_token_lengths)
-    
-    # Create a mapping from number to its token sequence with padding
-    number_to_tokens = {}
-    for num, tokens in zip(numbers, number_token_sequences):
-        if max_token_length > 1:
-            # For numbers that need padding
-            if len(tokens) < 3:
-                # Add % and \n tokens to make it 3 tokens
-                padded_tokens = tokens + [tokenizer.encode('%', add_special_tokens=False)[0]] + [tokenizer.encode('\n', add_special_tokens=False)[0]]
-                padded_tokens = padded_tokens[:3]  # Ensure exactly 3 tokens
-                number_to_tokens[num] = padded_tokens
-            else:
-                # For numbers that already have 3 or more tokens, just take the first 3
-                number_to_tokens[num] = tokens[:3]
-        else:
-            # If max_token_length is 1, just use the original tokens
-            number_to_tokens[num] = tokens
-
-    print("----------------------------")
-    print("Padded token sequences:")
-    for num, tokens in number_to_tokens.items():
-        print(f"{num}: {tokens}")
-
-    # Create a mapping from token sequence to number (for reverse lookup)
-    tokens_to_number = {tuple(tokens): num for num, tokens in number_to_tokens.items()}
-    
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(10)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 100,
@@ -425,75 +294,28 @@ def evaluation_chat(
         model.eval()
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
-            # Generate tokens based on max_token_length
-            if hasattr(model, "module"):
-                output = model.module.generate(
-                    **batch,
-                    max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
-                    do_sample=False,  # Use greedy decoding to get the most likely tokens
-                    pad_token_id=tokenizer.eos_token_id,
-                    return_dict_in_generate=True,
-                    output_scores=True
-                )
-                output2 = model.module(**batch)
-            else:
-                output = model.generate(
-                        **batch,
-                    max_new_tokens=max_token_length,  # Use max_token_length instead of fixed 3
-                    do_sample=False,  # Use greedy decoding to get the most likely tokens
-                    pad_token_id=tokenizer.eos_token_id,
-                    return_dict_in_generate=True,
-                    output_scores=True
-                )
-                output2 = model(**batch)
-
-            # Get the logits for the generated tokens
-            logits = torch.stack(output.scores, dim=1)  # shape: [batch_size, max_token_length, vocab_size]
-            loss_con = output2.loss if hasattr(output, 'loss') else torch.tensor(0.0).to(model.device)
-
-            # Get the logits for the generated tokens
-            num_tokens = logits  # shape: [batch_size, max_token_length, vocab_size]
+            output = model(**batch)
+            logits = output.logits
+            loss_con = output.loss
+            num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-
-            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+            scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
 
             if train_config.loss_type == 'brier':
-                    # Create a tensor to store the probabilities for each number
-                    num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
-                    # For each number, calculate the probability of its token sequence
-                    for num in range(101):
-                        tokens = number_to_tokens[str(num)]
-                        # Calculate the probability of the token sequence
-                        token_log_probs = torch.ones(y.shape[0], requires_grad=True).to(model.device)
-                        for i, token in enumerate(tokens):
-                            log_probs = num_tokens[:, i, :] 
-                            log_probs = F.softmax(log_probs, dim=-1) 
-                            token_log_probs *= log_probs[:, token]
-                        num_conf[:, num] = token_log_probs 
-                    
-                    # Normalize the probabilities
-                    num_conf = torch.pow(num_conf, 1/3)
-                    # Compute the loss
-                    y_expanded = y.expand(y.shape[0], 101)
-                    squared_differences = (y_expanded - scores) ** 2
-                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                num_conf = F.softmax(num_conf, dim=1)
+                # compute the loss
+                y_expanded = y.expand(y.shape[0], 10)
+                squared_differences = (y_expanded - scores) ** 2
+                loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
             elif train_config.loss_type == 'sot':
-                # Create a tensor to store the log probabilities for each number
-                num_conf = torch.zeros(y.shape[0], 101, requires_grad=True).to(model.device)
-                    
-                # For each number, calculate the log probability of its token sequence
-                for num in range(101):
-                    tokens = number_to_tokens[str(num)]
-                    # Calculate the log probability of the token sequence
-                    token_log_probs = torch.zeros(y.shape[0], requires_grad=True).to(model.device)
-                    for i, token in enumerate(tokens):
-                        log_probs = num_tokens[:, i, :] 
-                        log_probs = F.log_softmax(log_probs, dim=-1) 
-                        token_log_probs += log_probs[:, token]
-                    num_conf[:, num] = token_log_probs
+                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
                 smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                 smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                loss_cal = -torch.sum(num_conf * smoothed, dim=1).mean()
+                loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+            if train_config.save_metrics:
+                val_step_loss.append(loss.detach().float().item())
+                val_step_perplexity.append(float(torch.exp(loss.detach().float())))
 
             if train_config.add_loss_con:
                 loss = loss_con + loss_cal
@@ -504,9 +326,7 @@ def evaluation_chat(
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
-            
-            # Calculate probabilities for evaluation metrics
-            probs = torch.argmax(num_conf, dim=1) * 0.01
+            probs = 0.1 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
@@ -518,8 +338,6 @@ def evaluation_chat(
     #     plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original, train_config.dataset)
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
-
-
 
     # Compute average loss and perplexity
     eval_epoch_loss = eval_loss / len(eval_dataloader)
@@ -541,7 +359,6 @@ def evaluation_chat(
                         'eval/roc_auc': roc_auc_score,
                     }, commit=False)
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
-
 
 def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
     """
@@ -623,7 +440,6 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        
 
-
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     if wandb_run:
         if original == True:
@@ -647,8 +463,6 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
     
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
-
-
 
     if wandb_run:
         wandb_run.log({
@@ -701,7 +515,6 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
-
     # Compute ECE and ROC-AUC score given all_y and eval_probs
     if wandb_run:
         if original == True:
@@ -720,7 +533,6 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     roc_auc_score = val_metrics['auroc']
     score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
-
     if wandb_run:
         wandb_run.log({
                         f'test/number_{train_config.dataset}': number,
@@ -733,21 +545,16 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
 
     return ece_score, roc_auc_score, val_metrics['acc2']
 
-
-
-
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
             if i < num_layer:
                 for param in layer.parameters():
                     param.requires_grad = False
 
-
 def check_frozen_layers_peft_model(model):
      for i, layer in enumerate(model.base_model.model.model.layers):
             for name, param in layer.named_parameters():
                 print(f"Layer {i}, parameter {name}: requires_grad = {param.requires_grad}")
-
 
 def setup():
     """Initialize the process group for distributed training"""
@@ -756,7 +563,6 @@ def setup():
         dist.init_process_group("ccl")
     else:
         dist.init_process_group("nccl")
-
 
 def setup_environ_flags(rank):
     """Set environment flags for debugging purposes"""
@@ -769,11 +575,9 @@ def setup_environ_flags(rank):
     if rank == 0:
         print(f"--> Running with torch dist debug set to detail")
 
-
 def cleanup():
     """Clean up the process group after training"""
     dist.destroy_process_group()
-
 
 def clear_gpu_cache(rank=None):
     """Clear the GPU cache for all ranks"""
@@ -783,7 +587,6 @@ def clear_gpu_cache(rank=None):
         torch.xpu_empty_cache()
     else:
         torch.cuda.empty_cache()
-
 
 def get_parameter_dtypes(model):
     """Get the data types of model parameters"""
@@ -808,12 +611,8 @@ def print_model_size(model, config, rank: int = 0) -> None:
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"\n--> {config.model_name} has {total_params / 1e6} Million params\n")
 
-
-
-
 def get_policies(cfg, rank):
     """Get the policies for mixed precision and fsdp wrapping"""
-
 
     verify_bfloat_support = ((
     torch.version.cuda
@@ -823,7 +622,6 @@ def get_policies(cfg, rank):
     and nccl.version() >= (2, 10)
     ) or
     (is_xpu_available()))
-
 
     mixed_precision_policy = None
     wrapping_policy = None

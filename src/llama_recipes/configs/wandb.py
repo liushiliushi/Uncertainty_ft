@@ -5,8 +5,8 @@ from typing import List, Optional
 from dataclasses import dataclass, field
 
 @dataclass
-class wandb_config:
-    project: str = 'grid_2000_qwen_loss_cal_False' # wandb project name
+class wandb_config_qwen:
+    project: str = 'grid_2000_qwen_coarse' # wandb project name
     entity: Optional[str] = None # wandb entity name
     job_type: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -16,3 +16,26 @@ class wandb_config:
     resume: Optional[bool] = False
     id: Optional[str] = None
     # allow_val_change: Optional[bool] = True
+@dataclass
+class wandb_config_mini:
+    project: str = 'grid_2000_ministral_coarse' # wandb project name
+    entity: Optional[str] = None # wandb entity name
+    job_type: Optional[str] = None
+    tags: Optional[List[str]] = None
+    group: Optional[str] = None
+    notes: Optional[str] = None
+    mode: Optional[str] = None
+    resume: Optional[bool] = False
+    id: Optional[str] = None
+    # allow_val_change: Optional[bool] = True
+@dataclass
+class wandb_config_llama:
+    project: str = 'grid_2000_llama' # wandb project name
+    entity: Optional[str] = None # wandb entity name
+    job_type: Optional[str] = None
+    tags: Optional[List[str]] = None
+    group: Optional[str] = None
+    notes: Optional[str] = None
+    mode: Optional[str] = None
+    resume: Optional[bool] = False
+    id: Optional[str] = None

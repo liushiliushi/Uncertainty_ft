@@ -35,6 +35,25 @@ system_prompt = """You will be asked reasoning questions. Please respond to the 
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: 0%"""
 
+system_prompt_coarse = """You will be asked reasoning questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Finally, please provide your confidence (0-9) to your answer. 
+            The confidence score must be a value between 0-9, where 9 is the maximum. Never use 10.
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Confidence: 8
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Confidence: 9
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Confidence: 0"""
+
 system_prompt_yes = """You will be asked reasoning questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
             Finally, please judge whether your answer is correct with "yes" or "no".
@@ -150,9 +169,14 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
     def apply_prompt_template(sample):
         if "Ministral" in train_config.model_name:
             prompt = [
-                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                {"role": "user", "content":  f"{system_prompt_coarse}\n\nQuestion: {sample['question']}"},
                 {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
             ]
+        elif "Qwen" in train_config.model_name:
+            prompt = [{'role': 'system', 'content': system_prompt_coarse},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+                ]
         else:
             prompt = [{'role': 'system', 'content': system_prompt},
                 {"role": "user", "content":  f"Question: {sample['question']}"},

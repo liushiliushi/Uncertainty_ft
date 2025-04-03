@@ -4,13 +4,16 @@
 lr_list=("1e-5" "3e-5" "5e-5")  # 新增学习率维度
 epoch_list=(2 3)
 loss_type_list=("brier" "sot")
-
+model_name=Ministral-8B-Instruct-2410 
 # 定义batch配置（训练专用GPU）
+# "16 1,2,3,4 4"
 batch_configs=(
     "16 1,2,3,4 4"
     "20 1,2,3,4,5 5"
     "24 1,2,3,4,5,6 6"
 )
+
+
 
 # 定义推理数据集与GPU映射
 declare -A infer_gpu_map=(
@@ -20,6 +23,7 @@ declare -A infer_gpu_map=(
     ["hotpot_qa"]=1
     ["truthful_qa"]=1
 )
+
 
 # 计算总实验次数（增加学习率维度）
 total_runs=$((${#lr_list[@]} * ${#epoch_list[@]} * ${#loss_type_list[@]} * ${#batch_configs[@]}))
@@ -45,8 +49,8 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
                     --temperature 0 \
                     --use_peft \
                     --peft_method lora \
-                    --model_name ../../meta-llama/Qwen2.5-7B-Instruct \
-                    --output_dir checkpoints/${run_id} \
+                    --model_name ../../meta-llama/${model_name} \
+                    --output_dir checkpoints/${model_name}_${run_id} \
                     --dataset hotpot_qa \
                     --batch_size_training=4 \
                     --val_batch_size=4 \
@@ -103,7 +107,7 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         for pid in "${pids[@]}"; do
           wait $pid
         done
-        rm -rf checkpoints/${run_id}
+        rm -rf checkpoints/${model_name}_${run_id}
       done
     done
   done

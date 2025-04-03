@@ -29,7 +29,7 @@ from llama_recipes.utils.config_utils import (
     get_dataloader_kwargs,
 )
 from llama_recipes.utils.dataset_utils import get_preprocessed_dataset2
-from llama_recipes.utils.train_utils_uncertainty import (
+from llama_recipes.utils.train_utils_uncertainty_coarse import (
     train_chat,
     test_vllm,
     clear_gpu_cache,
@@ -47,8 +47,15 @@ def setup_wandb(train_config, **kwargs):
             "You are trying to use wandb which is not currently installed. "
             "Please install it using pip install wandb"
         )
-    from llama_recipes.configs import wandb_config as WANDB_CONFIG
-    wandb_config = WANDB_CONFIG()
+    if "Ministral" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_mini as WANDB_CONFIG_MINI
+        wandb_config = WANDB_CONFIG_MINI()
+    elif "Qwen" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_qwen as WANDB_CONFIG_QWEN
+        wandb_config = WANDB_CONFIG_QWEN()
+    else:
+        from llama_recipes.configs import wandb_config_llama as WANDB_CONFIG_Llama
+        wandb_config = WANDB_CONFIG_Llama()
     update_config(wandb_config, **kwargs)
     init_dict = dataclasses.asdict(wandb_config)
     run = wandb.init(**init_dict)
