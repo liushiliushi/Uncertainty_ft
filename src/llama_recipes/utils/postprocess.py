@@ -425,6 +425,81 @@ def postprocess_answers(prompts, answers, dataset_name):
                 rationales.append("NONE")
         return out_responses, out_answers, rationales
     
+def confidence_replace_3level(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
+    out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
+    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+        answer_scorer = GPTAnswerScoring()
+    if True:
+        id = 0
+        for prompt, answer in zip(prompts, answers):
+            if vllm:
+                answer = answer.outputs[0].text
+                prompt_question = prompt
+                question_blocks = [answer]
+            else:
+                prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
+                question_blocks = re.split("(Question:)", answer)
+            for qblock in question_blocks:
+                if (prompt_question[:-2] in qblock) or vllm == True :
+                    qblock = re.sub("</s>", "", qblock)
+                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+                        matches1 = re.match(r'^.*?(?=\n|$)', qblock)
+                    else:
+                        matches1 = re.findall("Final answer: (.*)", qblock)
+                    if matches1 and matches2 and (matches2[-1] != ''):
+                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
+                        confidences_None.append(matches2[-1])
+                        if dataset_name == 'gsm8k_dataset':
+                            correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
+                        elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
+                            correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
+                        elif dataset_name == "hotpot_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
+                        elif dataset_name == "truthful_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
+                        if correct:
+                            y.append(1)
+                            y_None.append(1)
+                        else:
+                            y.append(0)
+                            y_None.append(0)
+                        qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
+                        if not vllm:
+                            prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
+                        if vllm:
+                            out_response_cleans.append(qblock)
+                        else:
+                            out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
+                        questions.append(prompt_question)
+                        correct_answer_cleans.append(json.loads(correct_answers[id]))
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+                        else:
+                            out_responses.append(prompt)
+                    else:
+                        y_None.append(None)
+                        confidences_None.append(None)
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+
+            id += 1
+    out_confidences2 = []
+    for conf_str in out_confidences:
+        # Convert confidence string to lowercase for case-insensitive matching
+        conf_str = conf_str.lower().strip()
+        if conf_str == "high":
+            out_confidences2.append(5/6)
+        elif conf_str == "medium":
+            out_confidences2.append(1/2)
+        elif conf_str == "low":
+            out_confidences2.append(1/6)
+        else:
+            # Default to medium if the confidence string is unrecognized
+            out_confidences2.append(1/2)
+            print(f"Warning: Invalid confidence format: {conf_str}")
+    return out_responses, out_response_cleans, questions, out_confidences2, y, y_None, confidences_None, correct_answer_cleans
+
 if __name__ == "__main__":
         
     prompt = 'You will be asked trivia questions. Please respond to the best of your ability.\nFirst, give your answer. Then write a rationale that includes your answer and why you think that your answer is correct.\nThis response should reflect how confident you are in your answer.\n\nFormat your output as:\nAnswer: <your answer (3-4 words max)>\nRationale: <a short explanation (1-2 sentences)>\n\nQuestion: In which ocean can one find Pentecost Island\nFinal answer:'

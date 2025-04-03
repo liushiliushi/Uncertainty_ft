@@ -34,6 +34,23 @@ system_prompt = """You will be asked reasoning questions. Please respond to the 
             Question: How many planets are in our solar system?
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: 0%"""
+system_prompt_linguistic = """You will be asked reasoning questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Finally, please provide your confidence (high, medium, low) to your answer.
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Confidence: high
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Confidence: high
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Confidence: low"""
 
 system_prompt_coarse = """You will be asked reasoning questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
@@ -189,6 +206,10 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
         
         
     def apply_prompt_template_test(sample):
+        if train_config.test_linguistic:
+            system_prompt = system_prompt_linguistic
+        else:
+            system_prompt = system_prompt
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

@@ -61,3 +61,4 @@ class train_config:
     test_original_model = False
     cuda: str = "0"
     add_loss_con: bool = False
+    test_linguistic: bool = False

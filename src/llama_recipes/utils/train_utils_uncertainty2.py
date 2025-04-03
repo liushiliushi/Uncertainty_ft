@@ -110,12 +110,15 @@ def train_chat(
     best_val_loss = float("inf")
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
-    # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    # Get the ids for high/middle/low confidence levels
+    confidence_levels = ["high", "middle", "low"]
+    token_ids = [tokenizer.encode(level, add_special_tokens=False)[0] for level in confidence_levels]
     print("----------------------------")
     print(token_ids)
-    num_indices = torch.tensor(token_ids).to(model.device)
+    conf_indices = torch.tensor(token_ids).to(model.device)
+    # Map confidence levels to actual confidence values
+    conf_values = {"high": 5/6, "middle": 3/6, "low": 1/6}
+    conf_scores = torch.tensor([conf_values["high"], conf_values["middle"], conf_values["low"]]).to(model.device)
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 80,
@@ -158,28 +161,38 @@ def train_chat(
                     logits = output.logits
                     loss_con = output.loss
 
-                num_token = logits[:,-1,:] # get the logit of the confidence token
+                conf_token = logits[:,-1,:] # get the logit of the confidence token
                 del logits
-                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
-
+                
                 if train_config.loss_type == 'brier':
-                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                    num_conf = F.softmax(num_conf, dim=1)
-                    # compute the loss
-                    y_expanded = y.expand(y.shape[0], 101)
-                    squared_differences = (y_expanded - scores) ** 2
-                    # print(num_conf)
-                    print(torch.argmax(num_conf, dim=1))
-                    print(y.squeeze())
-                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                    # Extract logits for high/middle/low tokens
+                    conf_logits = torch.index_select(conf_token, 1, conf_indices) # take out the logits of high/middle/low
+                    conf_probs = F.softmax(conf_logits, dim=1)
+                    
+                    # Calculate expected confidence value based on probabilities
+                    expected_conf = torch.sum(conf_probs * conf_scores.view(1, 3), dim=1, keepdim=True)
+                    
+                    # Compute the Brier score: (y - conf)^2
+                    loss_cal = torch.mean((y - expected_conf) ** 2)
                 elif train_config.loss_type == 'sot':
-                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                    print(norm_logit)
-                    print(torch.argmax(norm_logit, dim=1))
-                    print(y.squeeze())
-                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                    # Get log probabilities for the confidence tokens
+                    norm_logit = torch.index_select(F.log_softmax(conf_token, dim=1), 1, conf_indices)
+                    
+                    # Create target distribution based on ground truth
+                    # For correct answers (y=1), put higher probability on high confidence
+                    # For incorrect answers (y=0), put higher probability on low confidence
+                    target_probs = torch.zeros((y.shape[0], 3), device=model.device)
+                    
+                    # Create smoothed target distribution based on correctness
+                    for i in range(y.shape[0]):
+                        if y[i] > 0.5:  # Correct answer
+                            target_probs[i] = torch.tensor([0.7, 0.2, 0.1], device=model.device)  # high, middle, low
+                        else:  # Incorrect answer
+                            target_probs[i] = torch.tensor([0.1, 0.2, 0.7], device=model.device)  # high, middle, low
+                    
+                    # Cross-entropy loss
+                    loss_cal = -torch.sum(norm_logit * target_probs, dim=1).mean()
+                
                 if train_config.add_loss_con:
                     loss = loss_con + loss_cal
                 else:
@@ -287,10 +300,13 @@ def evaluation_chat(
     eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
-    # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
+    # Get the ids for high/middle/low confidence levels
+    confidence_levels = ["high", "middle", "low"]
+    token_ids = [tokenizer.encode(level, add_special_tokens=False)[0] for level in confidence_levels]
+    conf_indices = torch.tensor(token_ids).to(model.device)
+    # Map confidence levels to actual confidence values
+    conf_values = {"high": 5/6, "middle": 3/6, "low": 1/6}
+    conf_scores = torch.tensor([conf_values["high"], conf_values["middle"], conf_values["low"]]).to(model.device)
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 100,
@@ -309,22 +325,38 @@ def evaluation_chat(
             output = model(**batch)
             logits = output.logits
             loss_con = output.loss
-            num_token = logits[:,-1,:] # get the logit of the confidence token
+            conf_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
-
+            
             if train_config.loss_type == 'brier':
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
-                # compute the loss
-                y_expanded = y.expand(y.shape[0], 101)
-                squared_differences = (y_expanded - scores) ** 2
-                loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                # Extract logits for high/middle/low tokens
+                conf_logits = torch.index_select(conf_token, 1, conf_indices) # take out the logits of high/middle/low
+                conf_probs = F.softmax(conf_logits, dim=1)
+                
+                # Calculate expected confidence value based on probabilities
+                expected_conf = torch.sum(conf_probs * conf_scores.view(1, 3), dim=1, keepdim=True)
+                
+                # Compute the Brier score: (y - conf)^2
+                loss_cal = torch.mean((y - expected_conf) ** 2)
             elif train_config.loss_type == 'sot':
-                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                # Get log probabilities for the confidence tokens
+                norm_logit = torch.index_select(F.log_softmax(conf_token, dim=1), 1, conf_indices)
+                
+                # Create target distribution based on ground truth
+                # For correct answers (y=1), put higher probability on high confidence
+                # For incorrect answers (y=0), put higher probability on low confidence
+                target_probs = torch.zeros((y.shape[0], 3), device=model.device)
+                
+                # Create smoothed target distribution based on correctness
+                for i in range(y.shape[0]):
+                    if y[i] > 0.5:  # Correct answer
+                        target_probs[i] = torch.tensor([0.7, 0.2, 0.1], device=model.device)  # high, middle, low
+                    else:  # Incorrect answer
+                        target_probs[i] = torch.tensor([0.1, 0.2, 0.7], device=model.device)  # high, middle, low
+                
+                # Cross-entropy loss
+                loss_cal = -torch.sum(norm_logit * target_probs, dim=1).mean()
+            
             if train_config.save_metrics:
                 val_step_loss.append(loss.detach().float().item())
                 val_step_perplexity.append(float(torch.exp(loss.detach().float())))
@@ -338,8 +370,14 @@ def evaluation_chat(
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-            eval_probs.extend(probs.detach().cpu().numpy().tolist())
+            
+            # Calculate confidence scores from the high/middle/low tokens
+            conf_logits = torch.index_select(conf_token, 1, conf_indices)
+            conf_probs = F.softmax(conf_logits, dim=1)
+            
+            # Calculate expected confidence from probabilities
+            confidence_values = torch.sum(conf_probs * conf_scores.view(1, 3), dim=1)
+            eval_probs.extend(confidence_values.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
@@ -403,9 +441,13 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
         "return_dict_in_generate": True,
         # "pad_token_id": tokenizer.pad_token_id
     }
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
+    # Get the ids for high/middle/low confidence levels
+    confidence_levels = ["high", "middle", "low"]
+    token_ids = [tokenizer.encode(level, add_special_tokens=False)[0] for level in confidence_levels]
+    conf_indices = torch.tensor(token_ids).to(model.device)
+    # Map confidence levels to actual confidence values
+    conf_values = {"high": 5/6, "middle": 3/6, "low": 1/6}
+    conf_scores = torch.tensor([conf_values["high"], conf_values["middle"], conf_values["low"]]).to(model.device)
     with MemoryTrace() as memtrace:
         id = 0
         wan_table = wandb.Table(columns=['response','confidence', 'y'])
@@ -440,14 +482,16 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
                 # query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
                 # logits = model(query_tensors_new).logits
 
-            num_token = logits[:,-1,:]
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-            # num_token2 = logits2[:,-1,:]
-            # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
-            test_probs.extend(probs.detach().cpu().numpy().tolist())
+            conf_token = logits[:,-1,:]
+            
+            # Calculate confidence scores from the high/middle/low tokens
+            conf_logits = torch.index_select(conf_token, 1, conf_indices)
+            conf_probs = F.softmax(conf_logits, dim=1)
+            
+            # Calculate expected confidence from probabilities
+            confidence_values = torch.sum(conf_probs * conf_scores.view(1, 3), dim=1)
+            test_probs.extend(confidence_values.detach().cpu().numpy().tolist())
             test_probs_stage1.extend(confidence_stage1)
-            # print(probs)
-            # print(confidence_stage1)
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
             for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
                 wan_table.add_data(response, confidence, y_item)        
@@ -518,12 +562,37 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
                                     top_p=1.0,
                                      max_tokens=400)
 
+    # Get the ids for high/middle/low confidence levels
+    confidence_levels = ["high", "middle", "low"]
+    token_ids = [tokenizer.encode(level, add_special_tokens=False)[0] for level in confidence_levels]
+    conf_indices = torch.tensor(token_ids)
+    # Map confidence levels to actual confidence values
+    conf_values = {"high": 5/6, "middle": 3/6, "low": 1/6}
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    
+    # Convert string confidence levels (high/middle/low) to numerical values
+    numerical_confidences = []
+    for conf in out_confidences:
+        if isinstance(conf, str):
+            conf = conf.lower()
+            if conf == "high":
+                numerical_confidences.append(conf_values["high"])
+            elif conf == "middle":
+                numerical_confidences.append(conf_values["middle"])
+            elif conf == "low":
+                numerical_confidences.append(conf_values["low"])
+            else:
+                # Default to middle if the confidence string is unrecognized
+                numerical_confidences.append(conf_values["middle"])
+        else:
+            # If it's already a number, use it directly (for backward compatibility)
+            numerical_confidences.append(conf)
+    
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
@@ -536,10 +605,10 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
 
     number = len(y)
     print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    val_metrics = compute_conf_metrics(y, numerical_confidences, len(prompts))
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(y, numerical_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, numerical_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
