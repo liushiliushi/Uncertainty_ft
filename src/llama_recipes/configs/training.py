@@ -62,3 +62,4 @@ class train_config:
     cuda: str = "0"
     add_loss_con: bool = False
     test_linguistic: bool = False
+    train_coarse: bool = False

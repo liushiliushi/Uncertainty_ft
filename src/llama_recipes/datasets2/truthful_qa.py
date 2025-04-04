@@ -35,6 +35,28 @@ system_prompt = """You will be asked questions. Please respond to the best of yo
             Question: How many planets are in our solar system?
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: 0%"""
+
+system_prompt_linguistic = """You will be asked questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Assess your confidence level based on:
+                    - High (66%-100%): Certain of correctness with logical reasoning
+                    - Medium (33%-66%): Partially confident but some uncertainty
+                    - Low (0%-33%): Suspect potential errors in calculation/logic
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Confidence: high
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Confidence: high
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Confidence: low"""
+
 system_prompt_yes = """You will be asked questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
             Finally, please judge whether your answer is correct with "yes" or "no".
@@ -166,6 +188,8 @@ def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
             }
         
     def apply_prompt_template_test(sample):
+        if train_config.test_linguistic:
+            system_prompt = system_prompt_linguistic
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

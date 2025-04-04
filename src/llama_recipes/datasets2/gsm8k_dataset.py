@@ -31,10 +31,35 @@ system_prompt = """You will be asked math problems. Please respond to the best o
                    Final answer: 15
                    Confidence: 0%"""
 
+# system_prompt_linguistic = """You will be asked math problems. Please respond to the best of your ability.
+#                    Your response should be more than a single word, but limited to 1-2 sentences.
+#                    Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+#                    Finally, please provide your confidence (high, medium, low) to your answer.
+
+#                    Here are some examples:
+
+#                    Question: A bag contains 5 red apples and 3 green apples. How many apples are there in total?
+#                    Response: To find the total, add the red apples and green apples: 5 + 3 = 8 apples in total.
+#                    Final answer: 8
+#                    Confidence: high
+
+#                    Question: A train travels 60 miles per hour for 3 hours. How far does it travel in total?
+#                    Response: To calculate the total distance, multiply the speed by the time: 60 miles/hour * 3 hours = 180 miles.
+#                    Final answer: 180
+#                    Confidence: high
+
+#                    Question: A box contains 8 blue marbles and 6 red marbles. How many marbles are there in total?
+#                    Response: The total number of marbles is the sum of blue and red marbles: 8 + 7 = 15 marbles.
+#                    Final answer: 15
+#                    Confidence: low"""
+
 system_prompt_linguistic = """You will be asked math problems. Please respond to the best of your ability.
                    Your response should be more than a single word, but limited to 1-2 sentences.
                    Then please extract a single answer from the your response. If no answer is present, please write "NONE".
-                   Finally, please provide your confidence (high, medium, low) to your answer.
+                   Assess your confidence level based on:
+                    - High (66%-100%): Certain of correctness with logical reasoning
+                    - Medium (33%-66%): Partially confident but some uncertainty
+                    - Low (0%-33%): Suspect potential errors in calculation/logic
 
                    Here are some examples:
 

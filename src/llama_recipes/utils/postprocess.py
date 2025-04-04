@@ -442,6 +442,7 @@ def confidence_replace_3level(prompts, answers, correct_answers, dataset_name='t
             for qblock in question_blocks:
                 if (prompt_question[:-2] in qblock) or vllm == True :
                     qblock = re.sub("</s>", "", qblock)
+                    print(qblock)
                     matches2 = re.findall("Confidence: (.*)", qblock)
                     if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
                         matches1 = re.match(r'^.*?(?=\n|$)', qblock)
@@ -486,8 +487,9 @@ def confidence_replace_3level(prompts, answers, correct_answers, dataset_name='t
             id += 1
     out_confidences2 = []
     for conf_str in out_confidences:
-        # Convert confidence string to lowercase for case-insensitive matching
-        conf_str = conf_str.lower().strip()
+        # Clean the confidence string by removing <|im_end|> and any other special markers
+        conf_str = conf_str.lower().strip().replace('<|im_end|>', '').strip()
+        conf_str = re.sub(r'[^a-z]', '', conf_str)  # 去除非字母字符
         if conf_str == "high":
             out_confidences2.append(5/6)
         elif conf_str == "medium":

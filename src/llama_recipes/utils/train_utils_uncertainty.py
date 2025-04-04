@@ -142,8 +142,6 @@ def train_chat(
             for step, batch in enumerate(pbar): 
                 # TODO
                 print(batch['input_ids'].shape[1])
-                if batch['input_ids'].shape[1] > 350:
-                    continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:

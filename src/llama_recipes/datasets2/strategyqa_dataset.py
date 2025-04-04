@@ -36,6 +36,30 @@ system_prompt = """You will be asked trivia questions. Please respond to the bes
             Response: No. Pure water lacks conductive ions.
             Final answer: No.
             Confidence: 90%"""
+system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please provide the final answer of yes or no. If no answer is present, please write "NONE".
+            Assess your confidence level based on:
+                - High (66%-100%): Certain of correctness with logical reasoning
+                - Medium (33%-66%): Partially confident but some uncertainty
+                - Low (0%-33%): Suspect potential errors in calculation/logic
+
+            Here are some examples:
+
+            Question: Can plants survive without sunlight?
+            Response: No. Photosynthesis depends on sunlight.
+            Final answer: No.
+            Confidence: high
+
+            Question: Do all mammals lay eggs?
+            Response: No. Only monotremes (e.g., platypus) do.
+            Final answer: No.
+            Confidence: high
+
+            Question: Is water a good conductor of electricity?
+            Response: No. Pure water lacks conductive ions.
+            Final answer: No.
+            Confidence: high"""
 system_prompt_yes = """You will be asked trivia questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
             Then please provide the final answer of yes or no. If no answer is present, please write "NONE".
@@ -91,6 +115,8 @@ def get_strategyqa_yes(tokenizer, split, vllm=True):
     return dataset
 
 def get_strategyqa(tokenizer, split, train_config, on_policy=False):
+    if train_config.test_linguistic:
+        system_prompt = system_prompt_linguistic
     if split == 'train':
         print("Error! Strategy QA is not used for training.")
     else:

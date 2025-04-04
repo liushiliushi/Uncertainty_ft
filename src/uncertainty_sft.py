@@ -30,11 +30,8 @@ from llama_recipes.utils.config_utils import (
 )
 from llama_recipes.utils.dataset_utils import get_preprocessed_dataset2
 from llama_recipes.utils.train_utils_uncertainty_coarse import (
-    train_chat,
-    test_vllm,
     clear_gpu_cache,
     print_model_size,
-    get_policies,
 )
 from warnings import warn
 import sys
@@ -221,8 +218,11 @@ def main(**kwargs):
     clear_gpu_cache()  # 清理一次缓存
 
     # 开始训练
-    if train_config.on_policy:
-        results = train_dynamic(
+    if train_config.train_coarse:
+        from llama_recipes.utils.train_utils_uncertainty_coarse import (
+            train_chat,
+        )
+        results = train_chat(
             model,
             train_dataloader,
             eval_dataloader,
@@ -232,10 +232,13 @@ def main(**kwargs):
             scheduler,
             train_config.gradient_accumulation_steps,
             train_config,
-            accelerator,          # 传入 accelerator
+            accelerator,         # 传入 accelerator
             wandb_run,
         )
     else:
+        from llama_recipes.utils.train_utils_uncertainty import (
+            train_chat,
+        )
         results = train_chat(
             model,
             train_dataloader,

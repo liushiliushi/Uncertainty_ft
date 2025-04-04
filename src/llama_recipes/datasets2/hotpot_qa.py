@@ -1,4 +1,3 @@
-
 import copy
 import datasets
 import os
@@ -36,7 +35,10 @@ system_prompt = """You will be asked reasoning questions. Please respond to the 
             Confidence: 0%"""
 system_prompt_linguistic = """You will be asked reasoning questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
-            Finally, please provide your confidence (high, medium, low) to your answer.
+            Assess your confidence level based on:
+                    - High (66%-100%): Certain of correctness with logical reasoning
+                    - Medium (33%-66%): Partially confident but some uncertainty
+                    - Low (0%-33%): Suspect potential errors in calculation/logic
 
             Here are some examples:
 
@@ -206,10 +208,9 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
         
         
     def apply_prompt_template_test(sample):
+        global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
-        else:
-            system_prompt = system_prompt
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

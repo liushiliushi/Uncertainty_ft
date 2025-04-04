@@ -39,6 +39,52 @@ system_prompt = """You will be asked trivia questions. Please respond to the bes
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Final answer: NONE
             Confidence: 0%"""
+# system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
+#             Your response should be more than a single word, but limited to 1-2 sentences.
+#             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+#             Finally, please provide your confidence (high, medium, low)) to your answer.
+
+#             Here are some examples:
+
+#             Question: Who wrote Paradise Lost?
+#             Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+#             Final answer: John Milton
+#             Confidence: high
+
+#             Question: Which colonial power did Algeria gain independence from in 1962? 
+#             Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+#             Final answer: France
+#             Confidence: high
+
+#             Question: How many planets are in our solar system?
+#             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+#             Final answer: NONE
+#             Confidence: low"""
+
+system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+            Assess your confidence level based on:
+                    - High (50%-100%): Certain of correctness with logical reasoning
+                    - Medium (50%): Partially confident but some uncertainty
+                    - Low (0%-50%): Suspect potential errors in calculation/logic
+                    
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Final answer: John Milton
+            Confidence: high
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Final answer: France
+            Confidence: high
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Final answer: NONE
+            Confidence: low"""
 
 system_prompt_yes = """You will be asked trivia questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
@@ -220,6 +266,8 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
             }
         
     def apply_prompt_template_test(sample):
+        if train_config.test_linguistic:
+            system_prompt = system_prompt_linguistic
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},
