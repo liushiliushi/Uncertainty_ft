@@ -568,7 +568,7 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
     all_y = []
     test_probs = []
     test_probs_stage1 = []
-    
+    original = True
     # Initialize OpenAI client
     try:
         from openai import AzureOpenAI
@@ -637,18 +637,19 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
     # Log metrics to wandb
     if wandb_run:
         wandb_run.log({
-                        f'test/number_{train_config.dataset}': number,
-                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
-                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
-                        f'test/ece_{train_config.dataset}': ece_score,
-                        f'test/auroc_{train_config.dataset}': roc_auc_score,
-                        f'test/score_{train_config.dataset}': score,
+                        f'gpt/number_{train_config.dataset}': number,
+                        f'gpt/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'gpt/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'gpt/ece_{train_config.dataset}': ece_score,
+                        f'gpt/auroc_{train_config.dataset}': roc_auc_score,
+                        f'gpt/score_{train_config.dataset}': score,
                     }, commit=False)
     prompts2 = []
     for prompt, response in zip(prompts, responses):
         prompt[2]['content'] += (' ' + response)
-        prompts2.append(json.dumps(prompt))
+        prompts2.append(prompt)
     
+    original = False
     prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
@@ -667,9 +668,42 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
                                     top_p=1.0,
                                      max_tokens=400)
 
-    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    confidences = []
+    import re
+    for output in outputs:
+        percent_str = output.outputs[0].text
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            confidences.append(percent)
+        else:
+            # 处理无效值（例如设为 0 或记录警告）
+            confidences.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    val_metrics = compute_conf_metrics(y, confidences, len(prompts2))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, confidences, "stage2", wandb_run, original, train_config.dataset)
 
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
     return responses
 
 def freeze_transformer_layers(model, num_layer):

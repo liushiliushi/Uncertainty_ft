@@ -100,20 +100,20 @@ def main(**kwargs):
         accelerator.print("==============original test================")
         responses = test_gpt(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
-    if accelerator.is_main_process:
-        import json
-        prompts = [json.loads(item) for item in dataset_test["prompt"]]
-        prompts2 = []
-        for prompt, response in zip(prompts, responses):
-            prompt[2]['content'] += (' ' + response)
-            prompts2.append(json.dumps(prompt))
-        dataset_test2 = {}
-        dataset_test2['prompt'] = prompts2
-        dataset_test2['question'] = dataset_test['question']
-        dataset_test2['correct_answer'] = dataset_test['correct_answer']
-        print("==============finetuned test2stage================")
+    # if accelerator.is_main_process:
+    #     import json
+    #     prompts = [json.loads(item) for item in dataset_test["prompt"]]
+    #     prompts2 = []
+    #     for prompt, response in zip(prompts, responses):
+    #         prompt[2]['content'] += (' ' + response)
+    #         prompts2.append(json.dumps(prompt))
+    #     dataset_test2 = {}
+    #     dataset_test2['prompt'] = prompts2
+    #     dataset_test2['question'] = dataset_test['question']
+    #     dataset_test2['correct_answer'] = dataset_test['correct_answer']
+    #     print("==============finetuned test2stage================")
         
-        test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test2, tokenizer, wandb_run, original=False)
+    #     test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test2, tokenizer, wandb_run, original=False)
 
 
 if __name__ == "__main__":
