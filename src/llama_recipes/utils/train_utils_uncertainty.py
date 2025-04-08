@@ -645,7 +645,7 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
                         f'test/score_{train_config.dataset}': score,
                     }, commit=False)
 
-    return ece_score, roc_auc_score, val_metrics['acc2']
+    return responses
 
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
