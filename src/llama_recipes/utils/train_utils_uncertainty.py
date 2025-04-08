@@ -644,6 +644,31 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
                         f'test/auroc_{train_config.dataset}': roc_auc_score,
                         f'test/score_{train_config.dataset}': score,
                     }, commit=False)
+    prompts2 = []
+    for prompt, response in zip(prompts, responses):
+        prompt[2]['content'] += (' ' + response)
+        prompts2.append(json.dumps(prompt))
+    
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+
 
     return responses
 
