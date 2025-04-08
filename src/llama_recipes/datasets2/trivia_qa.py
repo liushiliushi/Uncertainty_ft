@@ -65,9 +65,10 @@ system_prompt_linguistic = """You will be asked trivia questions. Please respond
             Your response should be more than a single word, but limited to 1-2 sentences.
             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
             Assess your confidence level based on:
-                    - High (50%-100%): Certain of correctness with logical reasoning
-                    - Medium (50%): Partially confident but some uncertainty
-                    - Low (0%-50%): Suspect potential errors in calculation/logic
+                    - High (66%-100%): Certain of correctness with logical reasoning
+                    - Medium (33%-66%): Partially confident but some uncertainty
+                    - Low (0%-33%): Suspect potential errors in calculation/logic
+
                     
             Here are some examples:
 
@@ -266,6 +267,7 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
             }
         
     def apply_prompt_template_test(sample):
+        global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
         if "Ministral" in train_config.model_name:

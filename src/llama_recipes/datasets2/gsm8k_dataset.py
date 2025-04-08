@@ -224,6 +224,7 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
             }
 
     def apply_prompt_template_test(sample):
+        global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
         if "Ministral" in train_config.model_name:

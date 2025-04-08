@@ -552,6 +552,105 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
 
     return ece_score, roc_auc_score, val_metrics['acc2']
 
+def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+    
+    # Initialize OpenAI client
+    try:
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+            api_version=os.environ['OPENAI_API_VERSION'],
+            azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+        )
+    except:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+        )
+    # Set the model name based on whether we're using the original or fine-tuned model
+    model_name = train_config.model_name if original else train_config.output_dir
+    
+    # Create a wandb table for logging
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    
+    # Process prompts
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+
+    # Generate responses using OpenAI API
+    outputs = []
+    for prompt in prompts:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=prompt,
+                temperature=train_config.temperature,
+                max_tokens=400,
+                top_p=1.0,
+                n=1
+            )
+            outputs.append(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error generating response: {e}")
+            outputs.append("")
+    
+    # Process the outputs
+    if train_config.test_linguistic:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset, vllm=True)
+    else:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Log to wandb
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    # Compute metrics
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score, val_metrics['acc2']
+
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
             if i < num_layer:
