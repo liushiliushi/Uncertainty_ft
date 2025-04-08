@@ -596,7 +596,7 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
     for prompt in prompts:
         try:
             response = client.chat.completions.create(
-                model=model_name,
+                model=os.environ['OPENAI_DEPLOYMENT_NAME'],
                 messages=prompt,
                 temperature=train_config.temperature,
                 max_tokens=400,
@@ -610,9 +610,9 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
     
     # Process the outputs
     if train_config.test_linguistic:
-        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset, vllm=True)
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset, vllm=False)
     else:
-        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=False)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
