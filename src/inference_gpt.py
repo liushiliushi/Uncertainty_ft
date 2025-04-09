@@ -96,9 +96,8 @@ def main(**kwargs):
 
     dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
 
-    if train_config.test_original_model:
-        accelerator.print("==============original test================")
-        responses = test_gpt(train_config, dataset_test, tokenizer, wandb_run, original=True)
+    accelerator.print("==============original test================")
+    responses = test_gpt(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
     # if accelerator.is_main_process:
     #     import json
