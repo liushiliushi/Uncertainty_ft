@@ -141,9 +141,9 @@ def get_hotpot_qa_yes(tokenizer, split, vllm=True):
 def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:10000]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:1000]', trust_remote_code=True)
     elif split == "validation":
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:1500]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:1000]', trust_remote_code=True)
     def apply_prompt_template(sample):
         if "Ministral" in train_config.model_name:
             prompt = [
@@ -155,10 +155,7 @@ def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
                   {"role": "user", "content": f"Question: {sample['question']}"},
                   {"role": "assistant", "content": f"Response:"}
                   ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
-        else:
-            prompt = json.dumps(prompt)
+        prompt = json.dumps(prompt)
         correct_answer = json.dumps(sample['answer'])
         return {
             'question': sample['question'],
@@ -174,12 +171,14 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
         if "Ministral" in train_config.model_name:
             path = "../dataset/hotpot_qa/train_ministral_temp=0_10000.jsonl"
         elif "Llama-3.1" in train_config.model_name:
-            path = "../dataset/hotpot_qa/train_llama_temp=0_10000.jsonl"
+            # path = "../dataset/hotpot_qa/train_llama_temp=0_10000.jsonl"
+            path = "../dataset/hotpot_qa/train_response_gpt.jsonl"
         elif "Qwen" in train_config.model_name:
             path = "../dataset/hotpot_qa/train_Qwen_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
+        # path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
+        path = "../dataset/hotpot_qa/validation_response_gpt.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"

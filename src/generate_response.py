@@ -7,6 +7,7 @@ import json
 import dataclasses
 import fire
 import random
+from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
 
 import torch.optim as optim
 from peft import get_peft_model, PeftModel, AutoPeftModelForCausalLM
@@ -44,7 +45,7 @@ from llama_recipes.utils.config_utils import (
     check_fsdp_config,
 )
 from llama_recipes.utils.dataset_utils import get_preprocessed_dataset, get_raw_dataset, get_preprocessed_dataset2
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_gpt
 
 from llama_recipes.utils.fsdp_utils import hsdp_device_mesh
 from accelerate.utils import is_xpu_available
@@ -98,25 +99,11 @@ def main(**kwargs):
     # Load the pre-trained model and setup its configuration
     use_cache = False if train_config.enable_fsdp else None
 
-    llm = LLM(
-        model=train_config.model_name,
-        tensor_parallel_size=1,
-        dtype="float16",
-        seed=42,
-        disable_log_stats=True,
-        trust_remote_code=True,
-        gpu_memory_utilization=0.95,
-        enforce_eager=True,
-    )
+    
 
     # model = AutoPeftModelForCausalLM.from_pretrained("checkpoints0921")
 
-    # Load the tokenizer and add special tokens
-    tokenizer = AutoTokenizer.from_pretrained(
-        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
-    # TODO
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-
+    
 
 
 
@@ -144,7 +131,7 @@ def main(**kwargs):
     dataset_config = None
 
     dataset = get_raw_dataset(
-        tokenizer,
+        None,
         train_config,
         kwargs['split'],
     )
@@ -169,9 +156,69 @@ def main(**kwargs):
                                      temperature=train_config.temperature,
                                      max_tokens=2048)
     prompts = dataset['prompt']
-    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    prompts = [json.loads(item) for item in dataset['prompt']]
+    if "gpt" in train_config.model_name:
+        try:
+            from openai import AzureOpenAI, OpenAI
+            
+            # Try to use Azure OpenAI if environment variables are set, otherwise use standard OpenAI
+            try:
+                client = AzureOpenAI(
+                    api_key=os.environ['OPENAI_API_KEY'],
+                    api_version=os.environ['OPENAI_API_VERSION'],
+                    azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+                )
+                model_name = os.environ.get('OPENAI_DEPLOYMENT_NAME', train_config.model_name)
+            except (KeyError, ImportError):
+                client = OpenAI(
+                    api_key=os.environ['OPENAI_API_KEY'],
+                )
+                model_name = os.environ.get('OPENAI_DEPLOYMENT_NAME', train_config.model_name)
+                
+            # Process the prompts and generate responses using OpenAI API
+            outputs = []
+            for prompt in prompts:
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=prompt,
+                        temperature=train_config.temperature,
+                        max_tokens=2048,
+                        top_p=1.0,
+                        n=1
+                    )
+                    outputs.append(response.choices[0].message.content)
+                except Exception as e:
+                    print(f"Error generating response: {e}")
+                    outputs.append("")
+        except ImportError:
+            raise ImportError("OpenAI package not found. Please install it using 'pip install openai'")
+        except Exception as e:
+            raise Exception(f"Error initializing OpenAI client: {e}")
+        _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_gpt(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+        val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+        
+    else:
+        # Load the tokenizer and add special tokens
+        tokenizer = AutoTokenizer.from_pretrained(
+            train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, padding_side='left')
+        # TODO
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+        prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)  
+        llm = LLM(
+            model=train_config.model_name,
+            tensor_parallel_size=1,
+            dtype="float16",
+            seed=42,
+            disable_log_stats=True,
+            trust_remote_code=True,
+            gpu_memory_utilization=0.95,
+            enforce_eager=True,
+    )
+        outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+
+        _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     with open(train_config.output_dir, "w") as f1:
         for query_ids in range(len(questions)):
             if train_config.dataset == "hotpot_qa":

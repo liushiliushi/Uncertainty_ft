@@ -169,10 +169,7 @@ def get_gsm8k_dataset_raw(tokenizer, split, train_config, vllm=True):
                   {"role": "user", "content": f"Question: {sample['question']}"},
                   {"role": "assistant", "content": f"Response:"}
                   ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
-        else:
-            prompt = json.dumps(prompt)
+        prompt = json.dumps(prompt)
         correct_answer = extract_answer(sample['answer'])
         return {
             'question': sample['question'],

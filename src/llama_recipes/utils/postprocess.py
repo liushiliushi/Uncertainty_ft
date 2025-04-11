@@ -121,56 +121,41 @@ def confidence_replace_gpt(prompts, answers, correct_answers, dataset_name='triv
     if True:
         id = 0
         for prompt, answer in zip(prompts, answers):
-            if vllm:
-                answer = answer.outputs[0].text
-                prompt_question = prompt
-                question_blocks = [answer]
+            prompt_question = prompt
+
+            qblock = answer
+
+            matches2 = re.findall("Confidence: (.*)", qblock)
+            if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+                matches1 = re.match(r'^.*?(?=\n|$)', qblock)
             else:
-                prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
-                question_blocks = re.split("(Question:)", answer)
-            for qblock in question_blocks:
-                if (prompt_question[:-2] in qblock) or vllm == True :
-                    qblock = re.sub("</s>", "", qblock)
-                    matches2 = re.findall("Confidence: (.*)", qblock)
-                    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
-                        matches1 = re.match(r'^.*?(?=\n|$)', qblock)
-                    else:
-                        matches1 = re.findall("Final answer: (.*)", qblock)
-                    if matches1 and matches2 and (matches2[-1] != ''):
-                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
-                        confidences_None.append(matches2[-1])
-                        if dataset_name == 'gsm8k_dataset':
-                            correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
-                        elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
-                            correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
-                        elif dataset_name == "hotpot_qa":
-                            correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
-                        elif dataset_name == "truthful_qa":
-                            correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
-                        if correct:
-                            y.append(1)
-                            y_None.append(1)
-                        else:
-                            y.append(0)
-                            y_None.append(0)
-                        qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
-                        if not vllm:
-                            prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
-                        if vllm:
-                            out_response_cleans.append(qblock)
-                        else:
-                            out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
-                        questions.append(prompt_question)
-                        correct_answer_cleans.append(json.loads(correct_answers[id]))
-                        if vllm:
-                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
-                        else:
-                            out_responses.append(prompt)
-                    else:
-                        y_None.append(None)
-                        confidences_None.append(None)
-                        if vllm:
-                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+                matches1 = re.findall("Final answer: (.*)", qblock)
+            if matches1 and matches2 and (matches2[-1] != ''):
+                out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
+                confidences_None.append(matches2[-1])
+                if dataset_name == 'gsm8k_dataset':
+                    correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
+                elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
+                    correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
+                elif dataset_name == "hotpot_qa":
+                    correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
+                elif dataset_name == "truthful_qa":
+                    correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
+                if correct:
+                    y.append(1)
+                    y_None.append(1)
+                else:
+                    y.append(0)
+                    y_None.append(0)
+                qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
+                out_responses.append(qblock)
+                out_response_cleans.append(' ' + qblock)  
+                questions.append(prompt_question)  
+                correct_answer_cleans.append(json.loads(correct_answers[id])) 
+            else:
+                y_None.append(None)
+                confidences_None.append(None)
+                out_responses.append("")
 
             id += 1
     out_confidences2 = []
