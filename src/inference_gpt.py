@@ -32,6 +32,7 @@ from llama_recipes.utils.train_utils_uncertainty import (
     train_chat,
     test_vllm,
     test_gpt,
+    test_cross,
     clear_gpu_cache,
     print_model_size,
     get_policies,
@@ -97,7 +98,7 @@ def main(**kwargs):
     dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
 
     accelerator.print("==============original test================")
-    responses = test_gpt(train_config, dataset_test, tokenizer, wandb_run, original=True)
+    responses = test_cross(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
 
 if __name__ == "__main__":

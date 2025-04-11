@@ -722,7 +722,7 @@ def test_cross(train_config, test_dataset, tokenizer, wandb_run, original=False)
     Returns: ece_score, roc_auc_score, accuracy
     """
     llm = LLM(
-        model=train_config.model_name
+        model=train_config.model_name,
         tensor_parallel_size=1,
         dtype="float16",
         seed=42,
@@ -767,16 +767,18 @@ def test_cross(train_config, test_dataset, tokenizer, wandb_run, original=False)
 
     if wandb_run:
         wandb_run.log({
-                        f'test/number_{train_config.dataset}': number,
-                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
-                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
-                        f'test/ece_{train_config.dataset}': ece_score,
-                        f'test/auroc_{train_config.dataset}': roc_auc_score,
-                        f'test/score_{train_config.dataset}': score,
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
                     }, commit=False)
+    del llm
     prompts2 = []
-    for prompt, response in zip(prompts, responses):
-        prompt[2]['content'] += (' ' + response)
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for prompt, response in zip(prompts, out_response_cleans):
+        prompt[2]['content'] += response
         prompts2.append(prompt)
     
     original = False
