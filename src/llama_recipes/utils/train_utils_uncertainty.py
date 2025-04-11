@@ -804,6 +804,8 @@ def test_cross(train_config, test_dataset, tokenizer, wandb_run, original=False)
     confidences = []
     import re
     for output in outputs:
+        print("====")
+        print(output.outputs[0].text)
         percent_str = output.outputs[0].text
         match = re.search(r"(\d+\.?\d*)%", percent_str)
         if match:
