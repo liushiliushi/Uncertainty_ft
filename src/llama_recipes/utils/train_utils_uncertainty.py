@@ -908,8 +908,10 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     del llm
     prompts2 = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    for prompt, response in zip(prompts, out_response_cleans):
-        prompt[2]['content'] += response
+    for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
+        prompt[2]['content'] += (response + str(int(confidence * 100)) + '%')
+        prompt.append({'role': 'user', 'content': 'If the confidence level is high, please repeat the previous response in the original format. If the confidence level is low, refine the answer and attempt to provide a better response.'})
+        prompt.append({'role': 'assistant', 'content': 'Response: '})
         prompts2.append(prompt)
     
     original = False
@@ -932,24 +934,24 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
                                      max_tokens=400)
 
     outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
-    confidences = []
-    import re
-    for output in outputs:
-        percent_str = output.outputs[0].text
-        match = re.search(r"(\d+\.?\d*)%", percent_str)
-        if match:
-            percent = float(match.group(1)) / 100
-            confidences.append(percent)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
         else:
-            # 处理无效值（例如设为 0 或记录警告）
-            confidences.append(0.0)
-            print(f"Warning: Invalid confidence format: {percent_str}")
-    val_metrics = compute_conf_metrics(y, confidences, len(prompts2))
-    
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts)) 
     # Plot metrics if wandb is enabled
     if train_config.use_wandb:
-        plot_confidence_histogram(y, confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-        plot_ece_diagram(y, confidences, "stage2", wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(y, out_confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage2", wandb_run, original, train_config.dataset)
 
     # Calculate scores
     ece_score = val_metrics['ece']
