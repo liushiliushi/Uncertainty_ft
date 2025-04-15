@@ -14,7 +14,7 @@ from llama_recipes.datasets2.strategyqa_dataset import get_strategyqa, get_strat
 from llama_recipes.datasets2.object_cou import get_object_cou2
 from llama_recipes.datasets2.trivia_qa import get_trivia_qa, get_trivia_qa_raw, get_trivia_qa_yes, get_trivia_qa_cons
 from llama_recipes.datasets2.truthful_qa import get_truthful_qa, get_truthful_qa_raw, get_truthful_qa_yes
-from llama_recipes.datasets2.hotpot_qa import get_hotpot_qa, get_hotpot_qa_raw, get_hotpot_qa_yes
+from llama_recipes.datasets2.hotpot_qa import get_hotpot_qa, get_hotpot_qa_raw, get_hotpot_qa_yes, get_hotpot_qa_reflection
 DATASET_PREPROC = {
     "alpaca_dataset": partial(get_alpaca_dataset),
     "grammar_dataset": get_grammar_dataset,
@@ -58,6 +58,21 @@ DATASET_YES = {
     "trivia_qa": get_trivia_qa_yes,
     "truthful_qa": get_truthful_qa_yes,
     "hotpot_qa": get_hotpot_qa_yes,
+}
+
+DATASET_REFLECTION = {
+    "alpaca_dataset": partial(get_alpaca_dataset),
+    "grammar_dataset": get_grammar_dataset,
+    "samsum_dataset": get_samsum_dataset,
+    "custom_dataset": get_custom_dataset,
+    "llamaguard_toxicchat_dataset": get_llamaguard_toxicchat_dataset,
+    "gsm8k_dataset": get_gsm8k_dataset_yes,
+    "professional_law": get_professional_law,
+    "strategy_qa": get_strategyqa_yes,
+    "object_cou": get_object_cou2,
+    "trivia_qa": get_trivia_qa_yes,
+    "truthful_qa": get_truthful_qa_yes,
+    "hotpot_qa": get_hotpot_qa_reflection,
 }
 
 DATASET_CONS = {

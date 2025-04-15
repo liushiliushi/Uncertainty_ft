@@ -493,11 +493,12 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     all_y = []
     test_probs = []
     test_probs_stage1 = []
+    print(f"seed:{train_config.seed}")
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
         dtype="float16",
-        seed=42,
+        seed=train_config.seed,
         disable_log_stats=True,
         trust_remote_code=True,
         gpu_memory_utilization=0.95,
@@ -852,6 +853,8 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
 
     Returns: ece_score, roc_auc_score, accuracy
     """
+
+
     llm = LLM(
         model=train_config.model_name,
         tensor_parallel_size=1,
@@ -909,10 +912,13 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     prompts2 = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
-        prompt[2]['content'] += (response + str(int(confidence * 100)) + '%')
-        prompt.append({'role': 'user', 'content': 'If the confidence level is high, please repeat the previous response in the original format. If the confidence level is low, refine the answer and attempt to provide a better response.'})
-        prompt.append({'role': 'assistant', 'content': 'Response: '})
-        prompts2.append(prompt)
+        if confidence < 0.5:
+            prompt[2]['content'] += (response + str(int(confidence * 100)) + '%')
+            prompt.append({'role': 'user', 'content': 'please output I don\'t know'})
+            prompt.append({'role': 'assistant', 'content': 'Response: '})
+            prompts2.append(prompt)
+        else:
+            prompts2.append(prompt)
     
     original = False
     prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)

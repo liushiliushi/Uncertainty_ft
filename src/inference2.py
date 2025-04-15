@@ -47,14 +47,21 @@ def setup_wandb(train_config, **kwargs):
             "You are trying to use wandb which is not currently installed. "
             "Please install it using pip install wandb"
         )
-    from llama_recipes.configs import wandb_config as WANDB_CONFIG
-    wandb_config = WANDB_CONFIG()
-    # wandb_config.update(allow_val_change=True)
+    if "Ministral" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_mini as WANDB_CONFIG_MINI
+        wandb_config = WANDB_CONFIG_MINI()
+    elif "Qwen" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_qwen as WANDB_CONFIG_QWEN
+        wandb_config = WANDB_CONFIG_QWEN()
+    else:
+        from llama_recipes.configs import wandb_config_llama as WANDB_CONFIG_Llama
+        wandb_config = WANDB_CONFIG_Llama()
     update_config(wandb_config, **kwargs)
     init_dict = dataclasses.asdict(wandb_config)
     run = wandb.init(**init_dict)
     run.config.update(dataclasses.asdict(train_config), allow_val_change=True)
     return run
+
 
 
 def main(**kwargs):
@@ -95,7 +102,6 @@ def main(**kwargs):
             else:
                 torch.manual_seed(seed)
             random.seed(seed)
-            
             accelerator.print(f"Testing with seed {seed}")
             test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
@@ -109,6 +115,7 @@ def main(**kwargs):
             random.seed(seed)
             
             accelerator.print(f"Testing with seed {seed}")
+            train_config.seed = seed
             test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=False)
             test_ece_scores.append(test_ece)
             test_auroc_scores.append(test_auroc)
@@ -124,7 +131,17 @@ def main(**kwargs):
         std_ece = np.std(test_ece_scores)
         std_auroc = np.std(test_auroc_scores)
         std_acc2 = np.std(test_acc2_scores)
-        
+
+        # 输出结果
+        print(f"Mean ECE: {mean_ece}")
+        print(f"Mean AUROC: {mean_auroc}")
+        print(f"Mean Accuracy2: {mean_acc2}")
+        print(f"Variance ECE: {var_ece}")
+        print(f"Variance AUROC: {var_auroc}")
+        print(f"Variance Accuracy2: {var_acc2}")
+        print(f"Std Dev ECE: {std_ece}")
+        print(f"Std Dev AUROC: {std_auroc}")
+        print(f"Std Dev Accuracy2: {std_acc2}")
 
         # 记录到wandb
         if wandb_run:
