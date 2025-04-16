@@ -493,7 +493,6 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     all_y = []
     test_probs = []
     test_probs_stage1 = []
-    print(f"seed:{train_config.seed}")
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
@@ -722,6 +721,7 @@ def test_cross(train_config, test_dataset, tokenizer, wandb_run, original=False)
 
     Returns: ece_score, roc_auc_score, accuracy
     """
+    
     llm = LLM(
         model=train_config.model_name,
         tensor_parallel_size=1,
@@ -853,7 +853,17 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
 
     Returns: ece_score, roc_auc_score, accuracy
     """
-
+    reflection_prompt = """Please revise your response and provide a better one.
+            Here are some examples:
+            If the previous round of conversation is:
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            Then you should output:
+            The response is less than 50%. I will revise the response.
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Confidence: 90%
+            """
 
     llm = LLM(
         model=train_config.model_name,
@@ -914,8 +924,8 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
         if confidence < 0.5:
             prompt[2]['content'] += (response + str(int(confidence * 100)) + '%')
-            prompt.append({'role': 'user', 'content': 'please output I don\'t know'})
-            prompt.append({'role': 'assistant', 'content': 'Response: '})
+            prompt.append({'role': 'user', 'content': reflection_prompt})
+            prompt.append({'role': 'assistant', 'content': ''})
             prompts2.append(prompt)
         else:
             prompts2.append(prompt)

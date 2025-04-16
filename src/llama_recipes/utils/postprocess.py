@@ -60,7 +60,11 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                     qblock = re.sub("</s>", "", qblock)
                     matches2 = re.findall("Confidence: (.*)", qblock)
                     if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
-                        matches1 = re.match(r'^.*?(?=\n|$)', qblock)
+                        response_match = re.search(r'Response:\s*(.*?)(?=\n\s*Confidence:|\n\s*$|$)', qblock, re.DOTALL)
+                        if response_match:
+                            matches1 = type('obj', (object,), {'group': lambda self: response_match.group(1).strip()})()
+                        else:
+                            matches1 = re.match(r'^.*?(?=\n|$)', qblock)
                     else:
                         matches1 = re.findall("Final answer: (.*)", qblock)
                     if matches1 and matches2 and (matches2[-1] != ''):
@@ -73,6 +77,9 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
                         elif dataset_name == "hotpot_qa":
                             correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
                         elif dataset_name == "truthful_qa":
+                            print("================")
+                            print(qblock)
+                            print( matches1.group())
                             correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
                         if correct:
                             y.append(1)
