@@ -96,10 +96,10 @@ def main(**kwargs):
     )
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    dataset_test = get_dataset_reflection(tokenizer, 'test', train_config)
+    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
 
     accelerator.print("==============original test================")
-    responses = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+    responses = test_reflection(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
 
 if __name__ == "__main__":
