@@ -140,8 +140,6 @@ def train_chat(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
-                # TODO
-                print(batch['input_ids'].shape[1])
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -325,7 +323,6 @@ def evaluation_chat(
                 loss = loss_con + loss_cal
             else:
                 loss = loss_cal
-            print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
             
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
@@ -334,34 +331,74 @@ def evaluation_chat(
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    number = len(all_y)
-    val_metrics = compute_conf_metrics(all_y, eval_probs, number)
-    # if train_config.use_wandb and accelerator.is_main_process:
-    #     plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-    #     plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original, train_config.dataset)
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
+    # 收集所有GPU上的数据
+    all_y_tensor = torch.tensor(all_y, device=model.device)
+    eval_probs_tensor = torch.tensor(eval_probs, device=model.device)
+    
+    # 获取每个GPU上数据的数量
+    local_num = torch.tensor(len(all_y), device=model.device)
+    
+    # 收集所有设备上的数据数量
+    all_num = accelerator.gather(local_num)
+    total_num = all_num.sum().item()
 
-    # Compute average loss and perplexity
-    eval_epoch_loss = eval_loss / len(eval_dataloader)
-    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader)
-    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader)
+    # 收集所有设备上的数据
+    gathered_all_y = accelerator.gather(all_y_tensor)
+    gathered_eval_probs = accelerator.gather(eval_probs_tensor)
+    
+    # 减少损失
+    eval_loss = accelerator.reduce(eval_loss, reduction="sum")
+    eval_loss_con = accelerator.reduce(eval_loss_con, reduction="sum")
+    eval_loss_cal = accelerator.reduce(eval_loss_cal, reduction="sum")
+
+    # 计算平均损失和困惑度
+    eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
-    # Print evaluation metrics
+    # 只在主进程上计算指标并进行可视化
     if accelerator.is_main_process:
+        # 将收集到的数据转换为列表
+        all_gathered_y = gathered_all_y.cpu().numpy().tolist()
+        all_gathered_probs = gathered_eval_probs.cpu().numpy().tolist()
+        
+        # 计算指标
+        accelerator.print(f" =========={total_num=}")
+        val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
+        ece_score = val_metrics['ece']
+        roc_auc_score = val_metrics['auroc']
+
+        # 在主进程上记录和可视化结果
+        if train_config.use_wandb:
+            plot_confidence_histogram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], 
+                wandb_run, original, train_config.dataset, use_annotation=True
+            )
+            plot_ece_diagram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                wandb_run, original, train_config.dataset
+            )
+        
+        # 打印评估指标
         accelerator.print(f" {eval_ppl=} {eval_epoch_loss=}")
 
-    if wandb_run and accelerator.is_main_process:
-        wandb_run.log({
-                        'eval/perplexity': eval_ppl,
-                        'eval/loss': eval_epoch_loss,
-                        'eval/loss_con': eval_epoch_loss_con,
-                        'eval/loss_cal': eval_epoch_loss_cal,
-                        'eval/ece': ece_score,
-                        'eval/roc_auc': roc_auc_score,
-                    }, commit=False)
+        # 记录到wandb
+        if wandb_run:
+            wandb_run.log({
+                'eval/perplexity': eval_ppl,
+                'eval/loss': eval_epoch_loss,
+                'eval/loss_con': eval_epoch_loss_con,
+                'eval/loss_cal': eval_epoch_loss_cal,
+                'eval/ece': ece_score,
+                'eval/roc_auc': roc_auc_score,
+            }, commit=False)
+    else:
+        # 非主进程不需要计算指标
+        ece_score = 0
+        roc_auc_score = 0
+
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
 def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
@@ -583,9 +620,6 @@ def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
         client = OpenAI(
             api_key=os.environ['OPENAI_API_KEY'],
         )
-    # Set the model name based on whether we're using the original or fine-tuned model
-    model_name = train_config.model_name if original else train_config.output_dir
-    
     # Create a wandb table for logging
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     
@@ -942,17 +976,11 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     prompts2 = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
-        confidence=0.1
         if confidence < 0.5:
-            prompt[2]['content'] += (response + str(int(confidence * 100)) + '%')
-            prompt.append({'role': 'user', 'content': 'If the confidence is less than 50%, review your previous answer and find problems with your answer.'})
-            # prompt.append({'role': 'assistant', 'content': ''})
+            prompt[0]['content'] = reflection_prompt
+            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'Please update your response based on the confidence.')
+            prompt[2]['content'] = 'Reflection: The response is '
             prompts2.append(prompt)
-        # if confidence < 0.5:
-        #     prompt[0]['content'] = reflection_prompt
-        #     prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'Please update your response based on the confidence.')
-        #     prompt[2]['content'] = 'Reflection: The response is '
-        #     prompts2.append(prompt)
         else:
             prompts2.append(prompt)
     

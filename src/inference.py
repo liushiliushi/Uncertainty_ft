@@ -78,11 +78,11 @@ def main(**kwargs):
     # 若有可用 GPU，设置一下可见设备（如果你使用 accelerate launcher，通常无需手动设置）
     # os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
 
-    accelerator = Accelerator()
+    # accelerator = Accelerator()
 
     # 只有在主进程时才进行 wandb 初始化
     wandb_run = None
-    if train_config.use_wandb and accelerator.is_main_process:
+    if train_config.use_wandb and True:
         wandb_run = setup_wandb(train_config, **kwargs)
 
     # 加载 tokenizer  
@@ -98,7 +98,7 @@ def main(**kwargs):
         accelerator.print("==============original test================")
         test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
-    if accelerator.is_main_process:
+    if True:
         print("==============finetuned test2stage================")
         test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=False)
 

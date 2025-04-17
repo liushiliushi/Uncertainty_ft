@@ -144,14 +144,15 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
     #plt.savefig(osp.join(visual_folder, input_file_name.replace(".json", f"_ece_{score_type}.pdf")), dpi=600)
 
 
-def compute_conf_metrics(y_true, y_confs, number):
+def compute_conf_metrics(y_true, y_confs, number, verbose=True):
 
     result_matrics = {}
     # ACC
     accuracy = sum(y_true) / len(y_true)
     accuracy2 = sum(y_true) / number
-    print("accuracy: ", accuracy)
-    print("accuracy with none: ", accuracy2)
+    if verbose:
+        print("accuracy: ", accuracy)
+        print("accuracy with none: ", accuracy2)
     result_matrics['acc'] = accuracy
     result_matrics['acc2'] = accuracy2
 
@@ -161,23 +162,27 @@ def compute_conf_metrics(y_true, y_confs, number):
     
     # AUCROC
     roc_auc = roc_auc_score(y_true, y_confs)
-    print("ROC AUC score:", roc_auc)
+    if verbose:
+        print("ROC AUC score:", roc_auc)
     result_matrics['auroc'] = roc_auc
 
     # AUPRC-Positive
     auprc = average_precision_score(y_true, y_confs)
-    print("AUC PRC Positive score:", auprc)
+    if verbose:
+        print("AUC PRC Positive score:", auprc)
     result_matrics['auprc_p'] = auprc
 
     # AUPRC-Negative
     auprc = average_precision_score(1- y_true, 1 - y_confs)
-    print("AUC PRC Negative score:", auprc)
+    if verbose:
+        print("AUC PRC Negative score:", auprc)
     result_matrics['auprc_n'] = auprc
     
     # AURC from https://github.com/IML-DKFZ/fd-shifts/tree/main
     aurc = area_under_risk_coverage_score(y_confs, y_true)
     result_matrics['aurc'] = aurc
-    print("AURC score:", aurc)
+    if verbose:
+        print("AURC score:", aurc)
 
 
     # ECE
@@ -185,7 +190,8 @@ def compute_conf_metrics(y_true, y_confs, number):
     # diagram = ReliabilityDiagram(n_bins)
     ece = ECE(n_bins)
     ece_score = ece.measure(np.array(y_confs), np.array(y_true))
-    print("ECE:", ece_score)
+    if verbose:
+        print("ECE:", ece_score)
     result_matrics['ece'] = ece_score
 
     return result_matrics

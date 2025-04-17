@@ -191,7 +191,7 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:10]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
 
     def apply_prompt_template(sample):
