@@ -100,10 +100,7 @@ def get_strategyqa_yes(tokenizer, split, vllm=True):
             {"role": "user", "content":  f"Question: {sample['input']}"},
             {"role": "assistant", "content": f"Response:"},
             ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
-        else:
-            prompt = json.dumps(prompt)
+        prompt = json.dumps(prompt)
         correct_answer = "yes" if sample['target_scores']["Yes"] == 1 else "no"
         return {
             'question': json.dumps(sample['input']),
@@ -120,7 +117,10 @@ def get_strategyqa(tokenizer, split, train_config, on_policy=False):
     if split == 'train':
         print("Error! Strategy QA is not used for training.")
     else:
-        path = '../dataset/StrategyQA/task.jsonl'
+        if train_config.train_gpt:
+            path = '../dataset/StrategyQA/validation_gpt_temp=0_1000.jsonl'
+        else:
+            path = '../dataset/StrategyQA/validation_temp=0_1000.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):

@@ -63,3 +63,4 @@ class train_config:
     add_loss_con: bool = False
     test_linguistic: bool = False
     train_coarse: bool = False
+    train_gpt: bool = False # Enable validation on multiple datasets (5 datasets) during training

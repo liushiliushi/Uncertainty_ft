@@ -35,6 +35,7 @@ from llama_recipes.utils.train_utils_uncertainty_coarse import (
 )
 from warnings import warn
 import sys
+from copy import deepcopy
 
 def setup_wandb(train_config, **kwargs):
     try:
@@ -107,8 +108,7 @@ def main(**kwargs):
     dataset_train = get_preprocessed_dataset2(tokenizer, 'train', train_config).shuffle(seed=42)
     accelerator.print(f"--> Training Set Length = {len(dataset_train)}")
 
-    dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
-    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
+    
     accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
 
     # 若使用 packing strategy
@@ -132,29 +132,50 @@ def main(**kwargs):
             **train_dl_kwargs,
         )
 
+    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
     test_dataloader = torch.utils.data.DataLoader(
         dataset_test,
         num_workers=0,
         batch_size=train_config.batch_size_testing
     )
 
-    eval_dataloader = None
+    # For train_gpt, prepare 5 validation dataloaders for different datasets
+    
+        
     if train_config.run_validation:
-        if train_config.batching_strategy == "packing":
-            dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
-        val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
-        eval_dataloader = torch.utils.data.DataLoader(
-            dataset_val,
-            num_workers=train_config.num_workers_dataloader,
-            pin_memory=True,
-            **val_dl_kwargs,
-        )
-        if len(eval_dataloader) == 0:
-            raise ValueError("Validation set size too small to form a single batch.")
-
-    # if train_config.test_original_model:
-    #     accelerator.print("==============original test================")
-    #     test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+        if train_config.train_gpt:
+            eval_dataloaders_dict = {}
+            eval_datasets = ['hotpot_qa', 'truthfulqa', 'gsm8k', 'trivia_qa', 'gsm8k_dataset']
+            original_dataset = train_config.dataset
+            for dataset_name in eval_datasets:
+                train_config.dataset = dataset_name     
+                dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
+                if train_config.batching_strategy == "packing":
+                    dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
+                val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
+                eval_dataloader = torch.utils.data.DataLoader(
+                    dataset_val,
+                    num_workers=train_config.num_workers_dataloader,
+                    pin_memory=True,
+                    **val_dl_kwargs,
+                )
+                if len(eval_dataloader) == 0:
+                    raise ValueError("Validation set size too small to form a single batch.")
+                eval_dataloaders_dict[dataset_name] = eval_dataloader   
+            train_config.dataset = original_dataset
+        else:
+            dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
+            if train_config.batching_strategy == "packing":
+                dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
+            val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
+            eval_dataloader = torch.utils.data.DataLoader(
+                dataset_val,
+                num_workers=train_config.num_workers_dataloader,
+                pin_memory=True,
+                **val_dl_kwargs,
+            )
+            if len(eval_dataloader) == 0:
+                raise ValueError("Validation set size too small to form a single batch.")
 
 
     # 加载/初始化模型
@@ -209,11 +230,14 @@ def main(**kwargs):
     optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
 
-    model, optimizer, train_dataloader,  = accelerator.prepare(
+    model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, 
     )
-    if eval_dataloader is not None:
-        eval_dataloader = accelerator.prepare(eval_dataloader)
+    
+    # Prepare the eval dataloaders with accelerator
+    if train_config.run_validation:
+        for dataset_name in eval_dataloaders_dict:
+            eval_dataloaders_dict[dataset_name] = accelerator.prepare(eval_dataloaders_dict[dataset_name])
 
     clear_gpu_cache()  # 清理一次缓存
 
@@ -225,8 +249,25 @@ def main(**kwargs):
         results = train_chat(
             model,
             train_dataloader,
-            eval_dataloader,
+            next(iter(eval_dataloaders_dict.values())) if eval_dataloaders_dict else None,  # Use first eval dataloader if available
             dataset_test,
+            tokenizer,
+            optimizer,
+            scheduler,
+            train_config.gradient_accumulation_steps,
+            train_config,
+            accelerator,         # 传入 accelerator
+            wandb_run,
+        )
+    elif train_config.train_gpt:
+        from llama_recipes.utils.train_utils_uncertainty import (
+            train_gpt,
+        )
+        results = train_gpt(
+            model,
+            train_dataloader,
+            eval_dataloaders_dict,  # Pass dictionary of dataloaders
+            test_dataloader,
             tokenizer,
             optimizer,
             scheduler,

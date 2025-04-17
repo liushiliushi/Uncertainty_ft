@@ -13,6 +13,7 @@ import contextlib
 import torch
 import torch.cuda.nccl as nccl
 import torch.distributed as dist
+import sys
 from tqdm import tqdm
 from transformers import LlamaTokenizer
 import json
@@ -230,19 +231,265 @@ def train_chat(
                         save_model_checkpoint(model, train_config.output_dir)
                         accelerator.print(f"Model is saved in {train_config.output_dir} directory")
 
-    # accelerator.wait_for_everyone()
-    # model.cpu() 
-    # del model
-    # torch.cuda.empty_cache() 
-    # rank = accelerator.process_index
-    # print(f"[rank={rank}] Before load model")
-    # if accelerator.is_main_process:
-    # accelerator.print("==============finetuned test2stage================")
-        
-    # test_ece, test_auroc = test_vllm(train_config, test_dataloader, tokenizer, wandb_run, original=False)
-    # rank = accelerator.process_index
-    # print(f"[rank={rank}] After load model")
-    # accelerator.wait_for_everyone()
+    results = None
+    sys.exit(0)
+
+    return results
+
+def train_gpt(
+    model,
+    train_dataloader,
+    eval_dataloaders_dict,  # Changed to dictionary of dataset_name -> eval_dataloader
+    test_dataloader,
+    tokenizer,
+    optimizer,
+    lr_scheduler,
+    gradient_accumulation_steps,
+    train_config,
+    accelerator,
+    wandb_run=None,
+):   
+    """
+    Trains the model on the given dataloader and evaluates on 5 datasets
+
+    Args:
+        model: The model to be trained
+        train_dataloader: The dataloader containing the training data
+        eval_dataloaders_dict: Dictionary mapping dataset names to their respective eval dataloaders
+        test_dataloader: The test dataloader
+        tokenizer: The tokenizer used for processing text
+        optimizer: The optimizer used for training
+        lr_scheduler: The learning rate scheduler
+        gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
+        train_config: The training configuration
+        accelerator: The accelerator for distributed training
+        wandb_run: The wandb run object for logging
+
+    Returns: results dictionary containing average training and validation perplexity and loss
+    """
+    # 根据是否使用混合精度来设置 autocast
+    if train_config.use_fp16 and torch.cuda.is_available():
+        autocast = torch.cuda.amp.autocast
+    else:
+        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
+
+    train_prep = []
+    train_loss = []
+    val_prep = []
+    val_loss =[]
+
+    epoch_times = []
+    checkpoint_times = []
+    results = {}
+    best_val_loss = float("inf")
+    total_train_steps = 0
+    max_steps_reached = False  # Flag to indicate max training steps reached
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    print("----------------------------")
+    print(token_ids)
+    num_indices = torch.tensor(token_ids).to(model.device)
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 80,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0.1,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
+    
+    # Start the training loop
+    for epoch in range(train_config.num_epochs):
+        for param_group in optimizer.param_groups:
+            print(f"Current learning rate: {param_group['lr']}")
+        # stop when the maximum number of training steps is reached
+        if max_steps_reached:
+            break
+        epoch_start_time = time.perf_counter()
+        with MemoryTrace() as memtrace:  # track the memory usage
+            model.train()
+            total_loss = 0.0
+            total_length = len(train_dataloader)//gradient_accumulation_steps
+            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            for step, batch in enumerate(pbar): 
+                total_train_steps += 1
+                # stop when the maximum number of training steps is reached
+                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
+                    max_steps_reached = True
+                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
+
+                y = batch.data.pop('y')
+
+                with autocast():
+                    # get the
+                    output = model(**batch)
+                    logits = output.logits
+                    loss_con = output.loss
+
+                num_token = logits[:,-1,:] # get the logit of the confidence token
+                del logits
+                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += loss.detach().float()
+
+                if wandb_run and accelerator.is_main_process:
+                    wandb_run.log({
+                            'train/epoch': epoch + 1,
+                            'train/step': epoch * len(train_dataloader) + step,
+                            'train/loss': loss.detach().float(),
+                            'train/loss_con': loss_con.detach().float(),
+                            'train/loss_cal': loss_cal.detach().float()
+                        })
+
+                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
+
+                    torch.cuda.empty_cache()
+ 
+        epoch_end_time = time.perf_counter()-epoch_start_time
+        epoch_times.append(epoch_end_time)
+        avg_loss = total_loss / len(train_dataloader)
+        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
+
+        # Update the learning rate as needed
+        lr_scheduler.step()
+
+        if train_config.run_validation:
+            # Evaluate on all 5 datasets
+            total_eval_score = 0.0
+            total_eval_loss = 0.0
+            dataset_scores = {}
+            
+            for dataset_name, eval_dataloader in eval_dataloaders_dict.items():
+                # Store original dataset name for logging
+                original_dataset = train_config.dataset
+                train_config.dataset = dataset_name
+                
+                accelerator.print(f"Evaluating on dataset: {dataset_name}")
+                
+                # 创建一个临时的 wandb 记录器，用于覆盖原来的 wandb 记录
+                temp_wandb_run = None
+                if accelerator.is_main_process and wandb_run:
+                    # 创建一个字典来存储当前数据集的指标
+                    temp_metrics = {}
+                    def temp_log(metrics_dict, commit=True):
+                        # 将指标临时存储在字典中，不直接记录到 wandb
+                        temp_metrics.update(metrics_dict)
+                    
+                    # 保存原始的 wandb 记录函数
+                    original_log = wandb_run.log
+                    # 替换为临时函数
+                    wandb_run.log = temp_log
+                
+                # 执行评估
+                eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                    model,
+                    train_config,
+                    eval_dataloader,
+                    tokenizer,
+                    accelerator,
+                    wandb_run,
+                )
+                
+                # 收集并重新记录带数据集名称的指标
+                if accelerator.is_main_process and wandb_run:
+                    # 恢复原始的 wandb 记录函数
+                    wandb_run.log = original_log
+                    
+                    # 重新格式化指标，添加数据集名称前缀
+                    dataset_metrics = {}
+                    for key, value in temp_metrics.items():
+                        if key.startswith('eval/'):
+                            # 将 'eval/' 替换为 'eval/{dataset_name}/'
+                            new_key = f'eval/{dataset_name}/{key[5:]}'
+                            dataset_metrics[new_key] = value
+                    
+                    # 记录特定数据集的指标
+                    wandb_run.log(dataset_metrics)
+                    
+                    # 提取关键指标用于计算总分
+                    ece_score = temp_metrics.get('eval/ece', 0)
+                    roc_auc_score = temp_metrics.get('eval/roc_auc', 0)
+                    accuracy = temp_metrics.get('eval/acc', 0)
+                    
+                    # 计算数据集得分
+                    dataset_score = 3 * accuracy + 2 * roc_auc_score - ece_score
+                    dataset_scores[dataset_name] = dataset_score
+                    total_eval_score += dataset_score
+                    total_eval_loss += eval_epoch_loss
+                    
+                    # 记录该数据集的总体得分和损失
+                    wandb_run.log({
+                        f'eval/{dataset_name}/score': dataset_score,
+                        f'eval/{dataset_name}/loss': eval_epoch_loss,
+                    })
+                    
+                    accelerator.print(f"Dataset {dataset_name} - Score: {dataset_score:.4f}, Loss: {eval_epoch_loss:.4f}")
+                
+                # 恢复原始数据集名称
+                train_config.dataset = original_dataset
+            
+            # Calculate average scores and log them
+            if accelerator.is_main_process and wandb_run:
+                # Average metrics
+                avg_eval_score = total_eval_score / len(eval_dataloaders_dict)
+                avg_eval_loss = total_eval_loss / len(eval_dataloaders_dict)
+                
+                # Log aggregate metrics
+                wandb_run.log({
+                    'eval/summary/total_score': total_eval_score,
+                    'eval/summary/avg_score': avg_eval_score,
+                    'eval/summary/avg_loss': avg_eval_loss,
+                })
+                
+                accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
+                accelerator.print(f"Evaluation Average Score: {avg_eval_score:.4f}")
+                accelerator.print(f"Evaluation Average Loss: {avg_eval_loss:.4f}")
+                
+                # For model checkpointing, use the average loss as the criterion
+                eval_epoch_loss = avg_eval_loss
+            
+            # Save model if validation performance improved
+            if accelerator.is_main_process:
+                if eval_epoch_loss < best_val_loss:
+                    best_val_loss = eval_epoch_loss
+                    if train_config.save_model:
+                        if train_config.use_peft:
+                            if hasattr(model, "module"):
+                                model = model.module
+                            if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                                model = model.to(dtype=torch.float32)
+                                model = model.merge_and_unload()
+                                model = model.to(dtype=torch.float16)
+                                save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                                accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                            else:
+                                save_peft_checkpoint(model, train_config.output_dir)
+                                accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                        else:
+                            save_model_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+
     results = None
     sys.exit(0)
 

@@ -162,7 +162,7 @@ def get_gsm8k_dataset_raw(tokenizer, split, train_config, vllm=True):
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         path = '../dataset/grade_school_math/data/test.jsonl'
-        dataset = datasets.load_dataset('json', data_files=path, split='train')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt},
@@ -187,7 +187,10 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
         path = '../dataset/grade_school_math/data/train_response_temp=0.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
-        path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
+        if train_config.train_gpt:
+            path = '../dataset/grade_school_math/data/validation_gpt_temp=0.jsonl'
+        else:
+            path = '../dataset/grade_school_math/data/validation_temp=0.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'

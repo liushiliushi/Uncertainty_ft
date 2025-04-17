@@ -174,10 +174,7 @@ def get_truthful_qa_raw(tokenizer, split, train_config, vllm=True):
                   {"role": "user", "content": f"Question: {sample['question']}"},
                   {"role": "assistant", "content": f"Response:"}
                   ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
-        else:
-            prompt = json.dumps(prompt)
+        prompt = json.dumps(prompt)
         correct_answers = sample['correct_answers']
         correct_answer = json.dumps(correct_answers)
         return {
@@ -195,7 +192,10 @@ def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
         path = "../dataset/trivia_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     elif split == 'val':
-        path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
+        if train_config.train_gpt:
+            path = "../dataset/trivia_qa/validation_gpt_temp=0.jsonl"
+        else:
+            path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split="validation")
