@@ -189,13 +189,13 @@ def get_truthful_qa_raw(tokenizer, split, train_config, vllm=True):
 
 def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
-        path = "../dataset/trivia_qa/tqa_train_response.jsonl"
+        path = "../dataset/truthful_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     elif split == 'val':
         if train_config.train_gpt:
-            path = "../dataset/trivia_qa/validation_gpt_temp=0.jsonl"
+            path = "../dataset/truthful_qa/validation_gpt_temp=0_1000.jsonl"
         else:
-            path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
+            path = "../dataset/truthful_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     else:
         dataset = datasets.load_dataset("truthful_qa", "generation", cache_dir="../dataset/Truthful_qa_raw", split="validation")
@@ -211,22 +211,11 @@ def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
                 {"role": "user", "content":  f"Question: {sample['question']}"},
                 {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
                 ]
-        matches1 = re.findall("Final answer: (.*)", sample['response_clean'])
-        matches2 = re.findall("Confidence:", sample['response_clean'])
-        if matches1 and matches2:
-            answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
-            y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
-            return {
+        return {
                 "prompt": prompt,
-                "y": y,
+                "y": sample['y'],
             }
-        else:
-            print("Error")
-            print(sample['response_clean'])
-            return {
-                "prompt": prompt,
-                "y": 0,
-            }
+        
         
     def apply_prompt_template_test(sample):
         global system_prompt

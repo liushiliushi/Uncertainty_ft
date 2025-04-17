@@ -281,7 +281,7 @@ def train_gpt(
     epoch_times = []
     checkpoint_times = []
     results = {}
-    best_val_loss = float("inf")
+    best_eval_score = float(0)
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
     # Get the ids of the numbers from 0 to 100
@@ -295,7 +295,7 @@ def train_gpt(
         "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": 0.1,
+        "temperature": 0,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
     }
@@ -374,15 +374,14 @@ def train_gpt(
         # Update the learning rate as needed
         lr_scheduler.step()
 
-        if train_config.run_validation:
+        if train_config.run_validation and epoch == (train_config.num_epochs - 1):
             # Evaluate on all 5 datasets
             total_eval_score = 0.0
             total_eval_loss = 0.0
             dataset_scores = {}
-            
+            original_dataset = train_config.dataset
             for dataset_name, eval_dataloader in eval_dataloaders_dict.items():
                 # Store original dataset name for logging
-                original_dataset = train_config.dataset
                 train_config.dataset = dataset_name
                 
                 accelerator.print(f"Evaluating on dataset: {dataset_name}")
@@ -423,6 +422,8 @@ def train_gpt(
                             # 将 'eval/' 替换为 'eval/{dataset_name}/'
                             new_key = f'eval/{dataset_name}/{key[5:]}'
                             dataset_metrics[new_key] = value
+                        elif key.startswith('plots/'):
+                            dataset_metrics[key] = value
                     
                     # 记录特定数据集的指标
                     wandb_run.log(dataset_metrics)
@@ -430,49 +431,33 @@ def train_gpt(
                     # 提取关键指标用于计算总分
                     ece_score = temp_metrics.get('eval/ece', 0)
                     roc_auc_score = temp_metrics.get('eval/roc_auc', 0)
-                    accuracy = temp_metrics.get('eval/acc', 0)
                     
                     # 计算数据集得分
-                    dataset_score = 3 * accuracy + 2 * roc_auc_score - ece_score
+                    dataset_score = 2 * roc_auc_score - ece_score
                     dataset_scores[dataset_name] = dataset_score
                     total_eval_score += dataset_score
-                    total_eval_loss += eval_epoch_loss
                     
                     # 记录该数据集的总体得分和损失
                     wandb_run.log({
                         f'eval/{dataset_name}/score': dataset_score,
-                        f'eval/{dataset_name}/loss': eval_epoch_loss,
                     })
                     
                     accelerator.print(f"Dataset {dataset_name} - Score: {dataset_score:.4f}, Loss: {eval_epoch_loss:.4f}")
-                
-                # 恢复原始数据集名称
-                train_config.dataset = original_dataset
+
+            train_config.dataset = original_dataset
             
             # Calculate average scores and log them
             if accelerator.is_main_process and wandb_run:
-                # Average metrics
-                avg_eval_score = total_eval_score / len(eval_dataloaders_dict)
-                avg_eval_loss = total_eval_loss / len(eval_dataloaders_dict)
-                
                 # Log aggregate metrics
                 wandb_run.log({
                     'eval/summary/total_score': total_eval_score,
-                    'eval/summary/avg_score': avg_eval_score,
-                    'eval/summary/avg_loss': avg_eval_loss,
                 })
-                
                 accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
-                accelerator.print(f"Evaluation Average Score: {avg_eval_score:.4f}")
-                accelerator.print(f"Evaluation Average Loss: {avg_eval_loss:.4f}")
-                
-                # For model checkpointing, use the average loss as the criterion
-                eval_epoch_loss = avg_eval_loss
+
             
             # Save model if validation performance improved
             if accelerator.is_main_process:
-                if eval_epoch_loss < best_val_loss:
-                    best_val_loss = eval_epoch_loss
+                if True:
                     if train_config.save_model:
                         if train_config.use_peft:
                             if hasattr(model, "module"):
@@ -582,12 +567,7 @@ def evaluation_chat(
     all_y_tensor = torch.tensor(all_y, device=model.device)
     eval_probs_tensor = torch.tensor(eval_probs, device=model.device)
     
-    # 获取每个GPU上数据的数量
-    local_num = torch.tensor(len(all_y), device=model.device)
-    
-    # 收集所有设备上的数据数量
-    all_num = accelerator.gather(local_num)
-    total_num = all_num.sum().item()
+    total_num = all_y_tensor.size()[0]
 
     # 收集所有设备上的数据
     gathered_all_y = accelerator.gather(all_y_tensor)
@@ -611,7 +591,8 @@ def evaluation_chat(
         all_gathered_probs = gathered_eval_probs.cpu().numpy().tolist()
         
         # 计算指标
-        accelerator.print(f" =========={total_num=}")
+        accelerator.print(f"====== {train_config.dataset}")
+        accelerator.print(f"Number: {total_num}")
         val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
         ece_score = val_metrics['ece']
         roc_auc_score = val_metrics['auroc']

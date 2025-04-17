@@ -230,9 +230,9 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         if train_config.train_gpt:
-            path = "../dataset/trivia_qa/validation_response_gpt.jsonl"
+            path = "../dataset/trivia_qa/validation_gpt_temp=0_1000.jsonl"
         else:
-            path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"
+            path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"

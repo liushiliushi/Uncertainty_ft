@@ -109,7 +109,6 @@ def main(**kwargs):
     accelerator.print(f"--> Training Set Length = {len(dataset_train)}")
 
     
-    accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
 
     # 若使用 packing strategy
     if train_config.batching_strategy == "packing":
@@ -145,7 +144,7 @@ def main(**kwargs):
     if train_config.run_validation:
         if train_config.train_gpt:
             eval_dataloaders_dict = {}
-            eval_datasets = ['hotpot_qa', 'truthfulqa', 'gsm8k', 'trivia_qa', 'gsm8k_dataset']
+            eval_datasets = ['truthful_qa', 'strategy_qa']
             original_dataset = train_config.dataset
             for dataset_name in eval_datasets:
                 train_config.dataset = dataset_name     
@@ -159,6 +158,8 @@ def main(**kwargs):
                     pin_memory=True,
                     **val_dl_kwargs,
                 )
+                accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
+
                 if len(eval_dataloader) == 0:
                     raise ValueError("Validation set size too small to form a single batch.")
                 eval_dataloaders_dict[dataset_name] = eval_dataloader   
@@ -174,6 +175,7 @@ def main(**kwargs):
                 pin_memory=True,
                 **val_dl_kwargs,
             )
+            accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
             if len(eval_dataloader) == 0:
                 raise ValueError("Validation set size too small to form a single batch.")
 
@@ -249,7 +251,7 @@ def main(**kwargs):
         results = train_chat(
             model,
             train_dataloader,
-            next(iter(eval_dataloaders_dict.values())) if eval_dataloaders_dict else None,  # Use first eval dataloader if available
+            eval_dataloader,
             dataset_test,
             tokenizer,
             optimizer,

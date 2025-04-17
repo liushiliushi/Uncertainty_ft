@@ -127,23 +127,54 @@ def get_strategyqa(tokenizer, split, train_config, on_policy=False):
         global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
-        if "Ministral" in train_config.model_name:
-            prompt = [
-                {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['input']}"},
+        if train_config.train_gpt == True:
+            if "Ministral" in train_config.model_name:
+                prompt = [
+                    {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['question']}"},
+                    {"role": "assistant", "content": f"Response:"},
+                    ]
+            else:
+                prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
                 {"role": "assistant", "content": f"Response:"},
                 ]
+            return {
+                "prompt": prompt,
+                'y': sample['y']
+            }
         else:
-            prompt = [{'role': 'system', 'content': system_prompt},
-            {"role": "user", "content":  f"Question: {sample['input']}"},
-            {"role": "assistant", "content": f"Response:"},
-            ]
-        correct_answer = "yes" if sample['target_scores']["Yes"] == 1 else "no"
-        return {
-            'question': json.dumps(sample['input']),
-            "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(correct_answer),
-        }
+            if "Ministral" in train_config.model_name:
+                prompt = [
+                    {"role": "user", "content":  f"{system_prompt}\n\nQuestion: {sample['input']}"},
+                    {"role": "assistant", "content": f"Response:"},
+                    ]
+            else:
+                prompt = [{'role': 'system', 'content': system_prompt},
+                {"role": "user", "content":  f"Question: {sample['input']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+            correct_answer = "yes" if sample['target_scores']["Yes"] == 1 else "no"
+            return {
+                'question': json.dumps(sample['input']),
+                "prompt": json.dumps(prompt),
+                "correct_answer": json.dumps(correct_answer),
+            }
+    def tokenize_add_label(sample):
+        prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
+        prompt = torch.cat((prompt, torch.tensor([220]))) # manually add white space because the tokenizer will automatically remove the white space ate the end of the sentence
+        response = tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False)
+        response = torch.cat((torch.tensor(response), torch.tensor([220])))
+        sample = {
+            "input_ids": prompt,
+            "attention_mask" : [1] * (len(prompt)),
+            'label': [-100] * (len(prompt)-len(response)) + response.tolist(),
+            'y': [sample['y']]
+            }
+
+        return sample
 
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+    if train_config.train_gpt == True:
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     return dataset
 
