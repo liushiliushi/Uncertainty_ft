@@ -1108,34 +1108,16 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     """
     reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
 
-            Here are some examples:
-            
-            1.
+            Here is the example:
+
             Question: Who wrote Paradise Lost?
             Response: The author of Paradise Lost was Percy Bysshe Shelley.
             Confidence: 40%
-            Please update your response based on the confidence.
-            Reflection: The response is less than 50%. I will revise the response.
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            If the confidence is less than 50%, analyze the answer and provide a better one.
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
             Confidence: 90%
-
-            2.
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Confidence: 100%
-            Please update your response based on the confidence.
-            Reflection: The confidence is larger than 50%.
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Confidence: 100%
-
-            3.
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Confidence: 0%
-            Please update your response based on the confidence.
-            Reflection: The response is less than 50%. I will revise the response.
-            Response: There are eight planets in our solar system.
-            Confidence: 90%
+            
             """
 
     llm = LLM(
@@ -1173,38 +1155,38 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
 
     number = len(y)
     print(f"Number: {number}")
-    # val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
-    # if train_config.use_wandb:
-    #     plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-    #     plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
-    # ece_score = val_metrics['ece']
-    # roc_auc_score = val_metrics['auroc']
-    # score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
-    # if wandb_run:
-    #     wandb_run.log({
-    #                     f'origin/number_{train_config.dataset}': number,
-    #                     f'origin/acc_{train_config.dataset}': val_metrics['acc'],
-    #                     f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
-    #                     f'origin/ece_{train_config.dataset}': ece_score,
-    #                     f'origin/auroc_{train_config.dataset}': roc_auc_score,
-    #                     f'origin/score_{train_config.dataset}': score,
-    #                 }, commit=False)
+    if wandb_run:
+        wandb_run.log({
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
     del llm
     prompts2 = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
         if confidence < 0.5:
             prompt[0]['content'] = reflection_prompt
-            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'Please update your response based on the confidence.')
+            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
             prompt[2]['content'] = 'Reflection: The response is '
             prompts2.append(prompt)
         else:
             prompts2.append(prompt)
     
     original = False
-    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=False)
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
