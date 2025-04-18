@@ -30,7 +30,7 @@ class wandb_config_mini:
     # allow_val_change: Optional[bool] = True
 @dataclass
 class wandb_config_llama:
-    project: str = 'grid_2000_llama' # wandb project name
+    project: str = 'grid_2000_llama_gpt2' # wandb project name
     entity: Optional[str] = None # wandb entity name
     job_type: Optional[str] = None
     tags: Optional[List[str]] = None

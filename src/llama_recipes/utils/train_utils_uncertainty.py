@@ -563,20 +563,11 @@ def evaluation_chat(
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
-    # 收集所有GPU上的数据
-    all_y_tensor = torch.tensor(all_y, device=model.device)
-    eval_probs_tensor = torch.tensor(eval_probs, device=model.device)
-    
-    total_num = all_y_tensor.size()[0]
+    total_num = len(all_y)
 
     # 收集所有设备上的数据
-    gathered_all_y = accelerator.gather(all_y_tensor)
-    gathered_eval_probs = accelerator.gather(eval_probs_tensor)
-    
-    # 减少损失
-    eval_loss = accelerator.reduce(eval_loss, reduction="sum")
-    eval_loss_con = accelerator.reduce(eval_loss_con, reduction="sum")
-    eval_loss_cal = accelerator.reduce(eval_loss_cal, reduction="sum")
+    gathered_all_y = all_y
+    gathered_eval_probs = eval_probs
 
     # 计算平均损失和困惑度
     eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
@@ -587,8 +578,8 @@ def evaluation_chat(
     # 只在主进程上计算指标并进行可视化
     if accelerator.is_main_process:
         # 将收集到的数据转换为列表
-        all_gathered_y = gathered_all_y.cpu().numpy().tolist()
-        all_gathered_probs = gathered_eval_probs.cpu().numpy().tolist()
+        all_gathered_y = gathered_all_y
+        all_gathered_probs = gathered_eval_probs
         
         # 计算指标
         accelerator.print(f"====== {train_config.dataset}")
