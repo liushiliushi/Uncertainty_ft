@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # 定义核心调参维度
-lr_list=("1e-5" "3e-5" "5e-5")  # 新增学习率维度
+lr_list=("1e-5" "3e-5" "5e-5" "1e-4")  # 新增学习率维度
 epoch_list=(2 3)
 loss_type_list=("brier" "sot")
-model_name=/home/tri/data/zhiyuan/lyb/meta-llama/Llama-3.1-8B-Instruct
+model_name=/home/tri/data/zhiyuan/lyb/meta-llama/Qwen2.5-7B-Instruct
 # 定义batch配置（训练专用GPU）
 # "16 1,2,3,4 4"
 batch_configs=(
@@ -35,7 +35,7 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         # 构造训练参数（更新学习率）
         train_paras="--add_loss_con False \
                     --train_gpt True \
-                    --train_coarse False \
+                    --train_coarse True \
                     --on_policy False \
                     --batch_size_testing 4 \
                     --do_sample False \

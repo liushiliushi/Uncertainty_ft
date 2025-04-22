@@ -77,6 +77,26 @@ system_prompt_linguistic = """You will be asked math problems. Please respond to
                    Response: The total number of marbles is the sum of blue and red marbles: 8 + 7 = 15 marbles.
                    Final answer: 15
                    Confidence: low"""
+system_prompt_correct = """You will be asked math problems. Please respond to the best of your ability.
+                   Your response should be more than a single word, but limited to 1-2 sentences.
+                   Finally, please provide the judgement of correct (50%-100% confidence) or incorrect (0%-50% confidence).
+
+                   Here are some examples:
+
+                   Question: A bag contains 5 red apples and 3 green apples. How many apples are there in total?
+                   Response: To find the total, add the red apples and green apples: 5 + 3 = 8 apples in total.
+                   Final answer: 8
+                   Judgement: correct
+
+                   Question: A train travels 60 miles per hour for 3 hours. How far does it travel in total?
+                   Response: To calculate the total distance, multiply the speed by the time: 60 miles/hour * 3 hours = 180 miles.
+                   Final answer: 180
+                   Judgement: correct
+
+                   Question: A box contains 8 blue marbles and 6 red marbles. How many marbles are there in total?
+                   Response: The total number of marbles is the sum of blue and red marbles: 8 + 7 = 15 marbles.
+                   Final answer: 15
+                   Judgement: incorrect"""
 
 system_prompt_yes = """You will be asked math problems. Please respond to the best of your ability.
                    Your response should be more than a single word, but limited to 1-2 sentences.
@@ -190,7 +210,7 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
         if train_config.train_gpt:
             path = '../dataset/grade_school_math/data/validation_gpt_temp=0_1000.jsonl'
         else:
-            path = '../dataset/grade_school_math/data/validation_temp=0.jsonl'
+            path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
         path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
@@ -227,6 +247,8 @@ def get_gsm8k_dataset2(tokenizer, split, train_config, on_policy=False):
         global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
+        elif train_config.test_correct:
+            system_prompt = system_prompt_correct
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

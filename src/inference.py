@@ -78,7 +78,7 @@ def main(**kwargs):
     # 若有可用 GPU，设置一下可见设备（如果你使用 accelerate launcher，通常无需手动设置）
     # os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
 
-    # accelerator = Accelerator()
+    accelerator = Accelerator()
 
     # 只有在主进程时才进行 wandb 初始化
     wandb_run = None

@@ -87,6 +87,29 @@ system_prompt_linguistic = """You will be asked trivia questions. Please respond
             Final answer: NONE
             Confidence: low"""
 
+system_prompt_correct = """You will be asked trivia questions. Please respond to the best of your ability.
+            Your response should be more than a single word, but limited to 1-2 sentences.
+            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
+            Finally, please provide the judgement of correct (50%-100% confidence) or incorrect (0%-50% confidence).
+
+                    
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            Final answer: John Milton
+            Judgement: correct
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Final answer: France
+            Judgement: correct
+
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Final answer: NONE
+            Judgement: incorrect"""
+
 system_prompt_yes = """You will be asked trivia questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
@@ -270,6 +293,8 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
         global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
+        elif train_config.test_correct:
+            system_prompt = system_prompt_correct
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class wandb_config_qwen:
-    project: str = 'grid_2000_qwen_coarse' # wandb project name
+    project: str = 'grid_2000_qwen_coarse_new' # wandb project name
     entity: Optional[str] = None # wandb entity name
     job_type: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -18,7 +18,7 @@ class wandb_config_qwen:
     # allow_val_change: Optional[bool] = True
 @dataclass
 class wandb_config_mini:
-    project: str = 'grid_2000_ministral_coarse' # wandb project name
+    project: str = 'grid_2000_ministral_coarse_gpt' # wandb project name
     entity: Optional[str] = None # wandb entity name
     job_type: Optional[str] = None
     tags: Optional[List[str]] = None

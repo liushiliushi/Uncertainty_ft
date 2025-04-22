@@ -189,7 +189,7 @@ def compute_conf_metrics(y_true, y_confs, number, verbose=True):
     n_bins = 10
     # diagram = ReliabilityDiagram(n_bins)
     ece = ECE(n_bins)
-    ece_score = ece.measure(np.array(y_confs), np.array(y_true))
+    ece_score = ece.measure(np.array(y_confs, dtype=np.float64), np.array(y_true))
     if verbose:
         print("ECE:", ece_score)
     result_matrics['ece'] = ece_score

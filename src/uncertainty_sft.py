@@ -237,35 +237,54 @@ def main(**kwargs):
     )
     
     # Prepare the eval dataloaders with accelerator
-    if train_config.run_validation:
+    if train_config.run_validation and train_config.train_gpt:
         for dataset_name in eval_dataloaders_dict:
             eval_dataloaders_dict[dataset_name] = accelerator.prepare(eval_dataloaders_dict[dataset_name])
-
+    else:
+        eval_dataloader = accelerator.prepare(eval_dataloader)
     clear_gpu_cache()  # 清理一次缓存
 
     # 开始训练
     if train_config.train_coarse:
         from llama_recipes.utils.train_utils_uncertainty_coarse import (
             train_chat,
+            train_gpt
         )
-        results = train_chat(
-            model,
-            train_dataloader,
-            eval_dataloader,
-            dataset_test,
-            tokenizer,
-            optimizer,
-            scheduler,
-            train_config.gradient_accumulation_steps,
-            train_config,
-            accelerator,         # 传入 accelerator
-            wandb_run,
-        )
-    elif train_config.train_gpt:
+        if train_config.train_gpt:
+            results = train_gpt(
+                model,
+                train_dataloader,
+                eval_dataloaders_dict,  # Pass dictionary of dataloaders
+                test_dataloader,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
+        else:
+            results = train_chat(
+                model,
+                train_dataloader,
+                eval_dataloader,
+                dataset_test,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
+    else:
         from llama_recipes.utils.train_utils_uncertainty import (
-            train_gpt,
+            train_chat,
+            train_gpt
         )
-        results = train_gpt(
+        if train_config.train_gpt:
+            results = train_gpt(
             model,
             train_dataloader,
             eval_dataloaders_dict,  # Pass dictionary of dataloaders
@@ -278,25 +297,21 @@ def main(**kwargs):
             accelerator,         # 传入 accelerator
             wandb_run,
         )
-    else:
-        from llama_recipes.utils.train_utils_uncertainty import (
-            train_chat,
-        )
-        results = train_chat(
-            model,
-            train_dataloader,
-            eval_dataloader,
-            dataset_test,
-            tokenizer,
-            optimizer,
-            scheduler,
-            train_config.gradient_accumulation_steps,
-            train_config,
-            accelerator,         # 传入 accelerator
-            wandb_run,
-        )
+        else:
+            results = train_chat(
+                model,
+                train_dataloader,
+                eval_dataloader,
+                dataset_test,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
     print("training ended")
-    sys.exit(0)
 
 
 if __name__ == "__main__":

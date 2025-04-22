@@ -109,6 +109,7 @@ class GPTAnswerScoring():
                         {"role": "system", "content": "You are a helpful assistant that helps people find information."},
                         {"role": "user", "content": prompt}
                     ],
+                    temperature=0
                 )
                 rsp = completion.choices[0].message.content
                 score = self.parse_response(rsp)

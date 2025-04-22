@@ -26,7 +26,7 @@ from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt,confidence_replace_correct
 from vllm import LLM, SamplingParams
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
@@ -202,7 +202,7 @@ def train_chat(
         # Update the learning rate as needed
         lr_scheduler.step()
 
-        if train_config.run_validation:
+        if train_config.run_validation and accelerator.is_main_process:
             eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                 model,
                 train_config,
@@ -560,11 +560,12 @@ def evaluation_chat(
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            probs, y = accelerator.gather_for_metrics((probs, y))
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
     total_num = len(all_y)
-
+    
     # 收集所有设备上的数据
     gathered_all_y = all_y
     gathered_eval_probs = eval_probs
@@ -773,6 +774,8 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     if train_config.test_linguistic:
         responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    elif train_config.test_correct:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_correct(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     else:
         responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
@@ -1108,18 +1111,35 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     """
     reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
 
-            Here is the example:
+            Here are the examples:
 
+            1. 
             Question: Who wrote Paradise Lost?
             Response: The author of Paradise Lost was Percy Bysshe Shelley.
             Confidence: 40%
-            If the confidence is less than 50%, analyze the answer and provide a better one.
+            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
             Reflection: The response is less than 50%. 
             Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
             Confidence: 90%
-            
-            """
 
+            2.
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
+            Reflection: The response is less than 50%. 
+            Response: Algeria gained independence from France in 1962 after a prolonged and violent struggle known as the Algerian War of Independence (1954–1962). The previous answer was correct.
+            Confidence: 95%
+
+            3.
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Confidence: 0%
+            Reflection: The response is less than 50%. 
+            Response: There are eight planets in our solar system.
+            Confidence: 100%
+            """
+    original = True
     llm = LLM(
         model=train_config.model_name,
         tensor_parallel_size=1,
@@ -1147,11 +1167,7 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
         wan_table.add_data(response, confidence, y_item)        
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if original == True:
-            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
-        else:
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
 
     number = len(y)
     print(f"Number: {number}")
@@ -1174,6 +1190,7 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
                         f'origin/score_{train_config.dataset}': score,
                     }, commit=False)
     del llm
+    original = False
     prompts2 = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
@@ -1185,7 +1202,7 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
         else:
             prompts2.append(prompt)
     
-    original = False
+    wan_table2 = wandb.Table(columns=['response','confidence', 'y'])
     prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
@@ -1207,14 +1224,10 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
     responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table.add_data(response, confidence, y_item)        
+        wan_table2.add_data(response, confidence, y_item)        
 
     # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if original == True:
-            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
-        else:
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+    wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table2})
 
     number = len(y)
     print(f"Number: {number}")

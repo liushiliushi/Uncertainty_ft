@@ -3,13 +3,13 @@
 # 定义核心调参维度
 lr_list=("1e-5" "3e-5" "5e-5")  # 新增学习率维度
 epoch_list=(2 3)
-loss_type_list=("brier" "sot")
-model_name=/home/tri/data/zhiyuan/lyb/meta-llama/Llama-3.1-8B-Instruct
+loss_type_list=("brier")
+model_name=/home/tri/data/zhiyuan/lyb/meta-llama/Qwen2.5-7B-Instruct
 # 定义batch配置（训练专用GPU）
 # "16 1,2,3,4 4"
 batch_configs=(
     "16 1,2,3,4 4"
-    "20 1,2,3,4,5 5"
+    "20 1,2,3,4,5 5"  ``
     "24 1,2,3,4,5,6 6"
 )
 
@@ -44,13 +44,14 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         # 构造训练参数（更新学习率）
         train_paras="--add_loss_con False \
                     --on_policy False \
+                    --train_coarse True \
                     --batch_size_testing 4 \
                     --do_sample False \
                     --temperature 0 \
                     --use_peft \
                     --peft_method lora \
                     --model_name ${model_name} \
-                    --output_dir checkpoints/${model_name}_${run_id} \
+                    --output_dir /home/tri/data/zhiyuan/lyb/checkpoints/${run_id} \
                     --dataset hotpot_qa \
                     --batch_size_training=4 \
                     --val_batch_size=4 \
@@ -107,7 +108,7 @@ for lr in "${lr_list[@]}"; do               # 新增学习率循环
         for pid in "${pids[@]}"; do
           wait $pid
         done
-        rm -rf checkpoints/${model_name}_${run_id}
+        rm -rf /home/tri/data/zhiyuan/lyb/checkpoints/${run_id}
       done
     done
   done

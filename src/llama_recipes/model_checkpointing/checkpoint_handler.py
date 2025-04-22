@@ -290,7 +290,10 @@ def save_peft_checkpoint(model, model_path):
     print("saved peft model")
 
 def save_merged_checkpoint(model, tokenizer, model_path):
-    model.save_pretrained(model_path)  
+    print(f"{model_path}")
+    
+    print("33333333333333")
+    model.save_pretrained(model_path) 
     tokenizer.save_pretrained(model_path)
     print("saved full model")
     

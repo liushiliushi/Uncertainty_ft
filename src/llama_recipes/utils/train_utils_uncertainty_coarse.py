@@ -2,6 +2,7 @@
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
 import os
+import sys
 import time
 import yaml
 from contextlib import nullcontext
@@ -142,6 +143,187 @@ def train_chat(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
+                total_train_steps += 1
+                # stop when the maximum number of training steps is reached
+                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
+                    max_steps_reached = True
+                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
+
+                y = batch.data.pop('y')
+
+                with autocast():
+                    # get the
+                    output1 = model(**batch)
+                    logits1 = output1.logits
+                    loss_con = output1.loss
+
+                num_token1 = logits1[:,-1,:] # get the logit of the confidence token
+                del logits1
+                # scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
+                scores = torch.linspace(0, 1, 10).view(1, 10).expand(y.shape[0], 10).to(model.device)
+
+                if train_config.loss_type == 'brier':
+                    num_conf1 = torch.index_select(num_token1, 1, num_indices1.squeeze(0)) # take out the logit of 0-9+1
+                    num_conf1 = F.softmax(num_conf1, dim=1)
+                    y_expanded = y.expand(y.shape[0], 10)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token1, dim=1), 1, num_indices1.squeeze(0))
+                    # print(norm_logit)
+                    # print(torch.argmax(norm_logit, dim=1))
+                    # print(y.squeeze())
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += loss.detach().float()
+
+                if wandb_run and accelerator.is_main_process:
+                    wandb_run.log({
+                            'train/epoch': epoch + 1,
+                            'train/step': epoch * len(train_dataloader) + step,
+                            'train/loss': loss.detach().float(),
+                            'train/loss_con': loss_con.detach().float(),
+                                'train/loss_cal': loss_cal.detach().float()
+                        })
+
+                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
+
+                    # torch.cuda.empty_cache()
+
+        epoch_end_time = time.perf_counter()-epoch_start_time
+        epoch_times.append(epoch_end_time)
+        avg_loss = total_loss / len(train_dataloader)
+        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
+
+        # Update the learning rate as needed
+        lr_scheduler.step()
+        if train_config.run_validation:
+            eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                model,
+                train_config,
+                eval_dataloader,
+                tokenizer,
+                accelerator,
+                wandb_run,
+            )
+            accelerator.print("==========================")
+            # if eval_epoch_loss < best_val_loss:
+            if True:
+                # if accelerator.is_main_process:
+                #     best_val_loss = eval_epoch_loss
+                if train_config.save_model and accelerator.is_main_process:
+                    if train_config.use_peft:
+                        if hasattr(model, "module"):
+                            model = model.module
+                        if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                            try:
+                                print("11111111111111")
+                                model = model.cpu()
+                                model = model.merge_and_unload()
+                                print("22222222222222")
+                                save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                                print("33333333333333")
+                                accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                            except Exception as e:
+                                accelerator.print(f"Error during model merge and save: {str(e)}")
+                        else:
+                            save_peft_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                    else:
+                        save_model_checkpoint(model, train_config.output_dir)
+                        accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+    results = None
+   
+
+    return results
+
+def train_gpt(
+    model,
+    train_dataloader,
+    eval_dataloaders_dict,  # Changed to dictionary of dataset_name -> eval_dataloader
+    test_dataloader,
+    tokenizer,
+    optimizer,
+    lr_scheduler,
+    gradient_accumulation_steps,
+    train_config,
+    accelerator,
+    wandb_run=None,
+):     
+    """
+    Trains the model on the given dataloader
+
+    Args:
+        model: The model to be trained
+        train_dataloader: The dataloader containing the training data
+        optimizer: The optimizer used for training
+        lr_scheduler: The learning rate scheduler
+        gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
+        num_epochs: The number of epochs to train for
+        local_rank: The rank of the current node in a distributed setting
+        train_config: The training configuration
+        eval_dataloader: The dataloader containing the eval data
+        tokenizer: tokenizer used in the eval for decoding the predicitons
+
+    Returns: results dictionary containing average training and validation perplexity and loss
+    """
+    # 根据是否使用混合精度来设置 autocast
+    if train_config.use_fp16 and torch.cuda.is_available():
+        autocast = torch.cuda.amp.autocast
+    else:
+        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
+
+    train_prep = []
+    train_loss = []
+    val_prep = []
+    val_loss =[]
+
+    epoch_times = []
+    checkpoint_times = []
+    results = {}
+    best_val_loss = float("inf")
+    total_train_steps = 0
+    max_steps_reached = False  # Flag to indicate max training steps reached
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(10)]
+    token_ids1 = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    token_ids2 = [tokenizer.encode('0', add_special_tokens=False)[0], tokenizer.eos_token_id]
+    print("----------------------------")
+    print(token_ids1)
+    num_indices1 = torch.tensor(token_ids1).to(model.device)
+    num_indices2 = torch.tensor(token_ids2).to(model.device)
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 80,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0.1,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
+    
+    # Start the training loop
+    for epoch in range(train_config.num_epochs):
+        for param_group in optimizer.param_groups:
+            print(f"Current learning rate: {param_group['lr']}")
+        # stop when the maximum number of training steps is reached
+        if max_steps_reached:
+            break
+        epoch_start_time = time.perf_counter()
+        with MemoryTrace() as memtrace:  # track the memory usage
+            model.train()
+            total_loss = 0.0
+            total_length = len(train_dataloader)//gradient_accumulation_steps
+            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            for step, batch in enumerate(pbar): 
                 # TODO
                 # print(batch['input_ids'].shape[1])
                 # if batch['input_ids'].shape[1] > 350:
@@ -210,41 +392,125 @@ def train_chat(
 
         # Update the learning rate as needed
         lr_scheduler.step()
-        if train_config.run_validation:
-            eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
-                model,
-                train_config,
-                eval_dataloader,
-                tokenizer,
-                accelerator,
-                wandb_run,
-            )
-            # if eval_epoch_loss < best_val_loss:
-            if True:
-                if accelerator.is_main_process:
-                    best_val_loss = eval_epoch_loss
-                if train_config.save_model and accelerator.is_main_process:
-                    if train_config.use_peft:
-                        if hasattr(model, "module"):
-                            model = model.module
-                        if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                            model = model.to(dtype=torch.float32)
-                            model = model.merge_and_unload()
-                            model = model.to(dtype=torch.float16)
-                            save_merged_checkpoint(model, tokenizer, train_config.output_dir)
-                            accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
-                            sys.exit(0)
-                        else:
-                            save_peft_checkpoint(model, train_config.output_dir)
-                            accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
-                    else:
-                        save_model_checkpoint(model, train_config.output_dir)
-                        accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+        if train_config.run_validation and epoch == (train_config.num_epochs - 1):
+            # Evaluate on all 5 datasets
+            total_eval_score = 0.0
+            total_eval_loss = 0.0
+            dataset_scores = {}
+            original_dataset = train_config.dataset
+            for dataset_name, eval_dataloader in eval_dataloaders_dict.items():
+                # Store original dataset name for logging
+                train_config.dataset = dataset_name
+                
+                accelerator.print(f"Evaluating on dataset: {dataset_name}")
+                
+                # 创建一个临时的 wandb 记录器，用于覆盖原来的 wandb 记录
+                temp_wandb_run = None
+                if accelerator.is_main_process and wandb_run:
+                    # 创建一个字典来存储当前数据集的指标
+                    temp_metrics = {}
+                    def temp_log(metrics_dict, commit=True):
+                        # 将指标临时存储在字典中，不直接记录到 wandb
+                        temp_metrics.update(metrics_dict)
+                    
+                    # 保存原始的 wandb 记录函数
+                    original_log = wandb_run.log
+                    # 替换为临时函数
+                    wandb_run.log = temp_log
+                
+                # 执行评估
+                eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                    model,
+                    train_config,
+                    eval_dataloader,
+                    tokenizer,
+                    accelerator,
+                    wandb_run,
+                )
+                
+                # 收集并重新记录带数据集名称的指标
+                if accelerator.is_main_process and wandb_run:
+                    # 恢复原始的 wandb 记录函数
+                    wandb_run.log = original_log
+                    
+                    # 重新格式化指标，添加数据集名称前缀
+                    dataset_metrics = {}
+                    for key, value in temp_metrics.items():
+                        if key.startswith('eval/'):
+                            # 将 'eval/' 替换为 'eval/{dataset_name}/'
+                            new_key = f'eval/{dataset_name}/{key[5:]}'
+                            dataset_metrics[new_key] = value
+                        elif key.startswith('plots/'):
+                            dataset_metrics[key] = value
+                    
+                    # 记录特定数据集的指标
+                    wandb_run.log(dataset_metrics)
+                    
+                    # 提取关键指标用于计算总分
+                    ece_score = temp_metrics.get('eval/ece', 0)
+                    roc_auc_score = temp_metrics.get('eval/roc_auc', 0)
+                    
+                    # 计算数据集得分
+                    dataset_score = 2 * roc_auc_score - ece_score
+                    dataset_scores[dataset_name] = dataset_score
+                    total_eval_score += dataset_score
+                    
+                    # 记录该数据集的总体得分和损失
+                    wandb_run.log({
+                        f'eval/{dataset_name}/score': dataset_score,
+                    })
+                    
+                    accelerator.print(f"Dataset {dataset_name} - Score: {dataset_score:.4f}, Loss: {eval_epoch_loss:.4f}")
 
+            train_config.dataset = original_dataset
+            
+            # Calculate average scores and log them
+            if accelerator.is_main_process:
+                # Log aggregate metrics
+                if wandb_run:
+                    wandb_run.log({
+                        'eval/summary/total_score': total_eval_score,
+                    })
+                    accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
+
+            
+
+                if True:
+                    if train_config.save_model:
+                        if train_config.use_peft:
+                            if hasattr(model, "module"):
+                                model = model.module
+                            if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                                # 清理GPU缓存以释放内存
+                                clear_gpu_cache()
+                                try:
+                                    accelerator.print("开始合并PEFT模型...请耐心等待")
+                                    # 先转到CPU合并，减少GPU内存使用
+                                    model = model.to(dtype=torch.float32)
+                                    model = model.cpu()
+                                    model = model.merge_and_unload()
+                                    # 合并后再转回原始精度和设备
+                                    model = model.to(dtype=torch.float16)
+                                    if torch.cuda.is_available():
+                                        model = model.to("cuda")
+                                    accelerator.print("PEFT模型合并完成，开始保存...")
+                                    save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                                    accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                                except Exception as e:
+                                    accelerator.print(f"Error during model merge and save: {str(e)}")
+                            else:
+                                save_peft_checkpoint(model, train_config.output_dir)
+                                accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                        else:
+                            save_model_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+                    # 移除sys.exit(0)调用
+    
     results = None
    
 
     return results
+
 
 def evaluation_chat(
     model,
@@ -276,7 +542,7 @@ def evaluation_chat(
     eval_loss_cal = 0.0
     total_eval_steps = 0
     # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(10)]
+    numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
     num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
@@ -299,13 +565,13 @@ def evaluation_chat(
             loss_con = output.loss
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-            scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
+            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':
                 num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
                 num_conf = F.softmax(num_conf, dim=1)
                 # compute the loss
-                y_expanded = y.expand(y.shape[0], 10)
+                y_expanded = y.expand(y.shape[0], 101)
                 squared_differences = (y_expanded - scores) ** 2
                 loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
             elif train_config.loss_type == 'sot':
@@ -321,43 +587,69 @@ def evaluation_chat(
                 loss = loss_con + loss_cal
             else:
                 loss = loss_cal
-            print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
             
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
-            probs = 0.1 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    number = len(all_y)
-    val_metrics = compute_conf_metrics(all_y, eval_probs, number)
-    # if train_config.use_wandb and accelerator.is_main_process:
-    #     plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-    #     plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original, train_config.dataset)
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
+    total_num = len(all_y)
 
-    # Compute average loss and perplexity
-    eval_epoch_loss = eval_loss / len(eval_dataloader)
-    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader)
-    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader)
+    # 收集所有设备上的数据
+    gathered_all_y = all_y
+    gathered_eval_probs = eval_probs
+
+    # 计算平均损失和困惑度
+    eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
-    # Print evaluation metrics
+    # 只在主进程上计算指标并进行可视化
     if accelerator.is_main_process:
+        # 将收集到的数据转换为列表
+        all_gathered_y = gathered_all_y
+        all_gathered_probs = gathered_eval_probs
+        
+        # 计算指标
+        accelerator.print(f"====== {train_config.dataset}")
+        accelerator.print(f"Number: {total_num}")
+        val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
+        ece_score = val_metrics['ece']
+        roc_auc_score = val_metrics['auroc']
+
+        # 在主进程上记录和可视化结果
+        if train_config.use_wandb:
+            plot_confidence_histogram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], 
+                wandb_run, original, train_config.dataset, use_annotation=True
+            )
+            plot_ece_diagram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                wandb_run, original, train_config.dataset
+            )
+        
+        # 打印评估指标
         accelerator.print(f" {eval_ppl=} {eval_epoch_loss=}")
 
-    if wandb_run and accelerator.is_main_process:
-        wandb_run.log({
-                        'eval/perplexity': eval_ppl,
-                        'eval/loss': eval_epoch_loss,
-                        'eval/loss_con': eval_epoch_loss_con,
-                        'eval/loss_cal': eval_epoch_loss_cal,
-                        'eval/ece': ece_score,
-                        'eval/roc_auc': roc_auc_score,
-                    }, commit=False)
+        # 记录到wandb
+        if wandb_run:
+            wandb_run.log({
+                'eval/perplexity': eval_ppl,
+                'eval/loss': eval_epoch_loss,
+                'eval/loss_con': eval_epoch_loss_con,
+                'eval/loss_cal': eval_epoch_loss_cal,
+                'eval/ece': ece_score,
+                'eval/roc_auc': roc_auc_score,
+            }, commit=False)
+    else:
+        # 非主进程不需要计算指标
+        ece_score = 0
+        roc_auc_score = 0
+
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
 def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
