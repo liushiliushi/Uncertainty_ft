@@ -246,7 +246,7 @@ def main(**kwargs):
 
     # 开始训练
     if train_config.train_coarse:
-        from llama_recipes.utils.train_utils_uncertainty_coarse import (
+        from llama_recipes.utils.test import (
             train_chat,
             train_gpt
         )

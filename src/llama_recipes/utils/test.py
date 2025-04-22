@@ -142,6 +142,10 @@ def train_chat(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
+                # TODO
+                # print(batch['input_ids'].shape[1])
+                # if batch['input_ids'].shape[1] > 350:
+                #     continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -158,12 +162,14 @@ def train_chat(
 
                 num_token1 = logits1[:,-1,:] # get the logit of the confidence token
                 del logits1
-                # scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
-                scores = torch.linspace(0, 1, 10).view(1, 10).expand(y.shape[0], 10).to(model.device)
+                scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
 
                 if train_config.loss_type == 'brier':
                     num_conf1 = torch.index_select(num_token1, 1, num_indices1.squeeze(0)) # take out the logit of 0-9+1
                     num_conf1 = F.softmax(num_conf1, dim=1)
+                    # compute the loss
+                    # num_conf1[:,10] *= num_conf2[:,0]
+                    # num_conf1[:,1] *= num_conf2[:,1]
                     y_expanded = y.expand(y.shape[0], 10)
                     squared_differences = (y_expanded - scores) ** 2
                     loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
@@ -213,6 +219,7 @@ def train_chat(
                 accelerator,
                 wandb_run,
             )
+            # if eval_epoch_loss < best_val_loss:
             if True:
                 if accelerator.is_main_process:
                     best_val_loss = eval_epoch_loss
@@ -233,6 +240,7 @@ def train_chat(
                     else:
                         save_model_checkpoint(model, train_config.output_dir)
                         accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+
     results = None
    
 
@@ -505,6 +513,8 @@ def train_gpt(
     return results
 
 
+
+
 def evaluation_chat(
     model,
     train_config,
@@ -534,7 +544,7 @@ def evaluation_chat(
     eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
-    # Get the ids of the numbers from 0 to 9
+    # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(10)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
     num_indices = torch.tensor(token_ids).to(model.device)
@@ -581,70 +591,42 @@ def evaluation_chat(
             else:
                 loss = loss_cal
             print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
-               
+            
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
             probs = 0.1 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
-    total_num = len(all_y)
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    number = len(all_y)
+    val_metrics = compute_conf_metrics(all_y, eval_probs, number)
+    # if train_config.use_wandb and accelerator.is_main_process:
+    #     plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+    #     plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original, train_config.dataset)
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
 
-    # 收集所有设备上的数据
-    gathered_all_y = all_y
-    gathered_eval_probs = eval_probs
-
-    # 计算平均损失和困惑度
-    eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
-    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
-    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
+    # Compute average loss and perplexity
+    eval_epoch_loss = eval_loss / len(eval_dataloader)
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader)
+    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader)
     eval_ppl = torch.exp(eval_epoch_loss)
 
-    # 只在主进程上计算指标并进行可视化
+    # Print evaluation metrics
     if accelerator.is_main_process:
-        # 将收集到的数据转换为列表
-        all_gathered_y = gathered_all_y
-        all_gathered_probs = gathered_eval_probs
-        
-        # 计算指标
-        accelerator.print(f"====== {train_config.dataset}")
-        accelerator.print(f"Number: {total_num}")
-        val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
-        ece_score = val_metrics['ece']
-        roc_auc_score = val_metrics['auroc']
-
-        # 在主进程上记录和可视化结果
-        if train_config.use_wandb:
-            plot_confidence_histogram(
-                all_gathered_y, all_gathered_probs, "evaluation", 
-                val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], 
-                wandb_run, original, train_config.dataset, use_annotation=True
-            )
-            plot_ece_diagram(
-                all_gathered_y, all_gathered_probs, "evaluation", 
-                wandb_run, original, train_config.dataset
-            )
-        
-        # 打印评估指标
         accelerator.print(f" {eval_ppl=} {eval_epoch_loss=}")
 
-        # 记录到wandb
-        if wandb_run:
-            wandb_run.log({
-                'eval/perplexity': eval_ppl,
-                'eval/loss': eval_epoch_loss,
-                'eval/loss_con': eval_epoch_loss_con,
-                'eval/loss_cal': eval_epoch_loss_cal,
-                'eval/ece': ece_score,
-                'eval/roc_auc': roc_auc_score,
-            }, commit=False)
-    else:
-        # 非主进程不需要计算指标
-        ece_score = 0
-        roc_auc_score = 0
-
+    if wandb_run and accelerator.is_main_process:
+        wandb_run.log({
+                        'eval/perplexity': eval_ppl,
+                        'eval/loss': eval_epoch_loss,
+                        'eval/loss_con': eval_epoch_loss_con,
+                        'eval/loss_cal': eval_epoch_loss_cal,
+                        'eval/ece': ece_score,
+                        'eval/roc_auc': roc_auc_score,
+                    }, commit=False)
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
 
 def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
