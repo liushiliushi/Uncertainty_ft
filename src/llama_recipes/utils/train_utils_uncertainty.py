@@ -1391,6 +1391,7 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
                 top_p=1.0,
                 n=1
             )
+            print(response.choices[0].message.content)
             outputs.append(response.choices[0].message.content)
         except Exception as e:
             print(f"Error generating response with GPT API: {e}")
