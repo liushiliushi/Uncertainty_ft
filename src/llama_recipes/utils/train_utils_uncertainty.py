@@ -1256,6 +1256,180 @@ def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=F
     return responses
 
 
+def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
+
+            Here are the examples:
+
+            1. 
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
+            Confidence: 90%
+
+            2.
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
+            Reflection: The response is less than 50%. 
+            Response: Algeria gained independence from France in 1962 after a prolonged and violent struggle known as the Algerian War of Independence (1954–1962). The previous answer was correct.
+            Confidence: 95%
+
+            3.
+            Question: How many planets are in our solar system?
+            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Confidence: 0%
+            Reflection: The response is less than 50%. 
+            Response: There are eight planets in our solar system.
+            Confidence: 100%
+            """
+    original = True
+    llm = LLM(
+        model=train_config.model_name,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
+    del llm
+    original = False
+    prompts2 = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
+        if confidence < 0.5:
+            prompt[0]['content'] = reflection_prompt
+            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+            prompt[2]['content'] = 'Reflection: The response is '
+            prompts2.append(prompt)
+        else:
+            continue
+            # prompts2.append(prompt)
+    wan_table2 = wandb.Table(columns=['response','confidence', 'y'])
+    
+    # 使用GPT API替代本地LLM
+    try:
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+            api_version=os.environ['OPENAI_API_VERSION'],
+            azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+        )
+    except:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+        )
+    
+    # 直接使用prompts2列表，不需要tokenizer.apply_chat_template
+    # prompts2已经是正确的消息格式列表：[{"role": "system", "content": ...}, ...]
+    outputs = []
+    for prompt in prompts2:
+        try:
+            response = client.chat.completions.create(
+                model=os.environ.get('OPENAI_DEPLOYMENT_NAME'),
+                messages=prompt,
+                temperature=train_config.temperature,
+                max_tokens=400,
+                top_p=1.0,
+                n=1
+            )
+            outputs.append(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error generating response with GPT API: {e}")
+            outputs.append("")
+    
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_gpt(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset, vllm=False)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table2.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table2})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts)) 
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
+
+
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
             if i < num_layer:
