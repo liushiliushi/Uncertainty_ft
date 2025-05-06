@@ -245,9 +245,9 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
     plt.ylim(0.0, 1.0)
     
     # Add legend
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), fontsize=16)
+    # handles, labels = plt.gca().get_legend_handles_labels()
+    # by_label = dict(zip(labels, handles))
+    # plt.legend(by_label.values(), by_label.keys(), fontsize=16)
     
     # Add grid
     plt.grid(True, linestyle='--', alpha=0.3)
