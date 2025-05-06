@@ -138,8 +138,7 @@ def main(**kwargs):
     if train_config.run_validation:
         if train_config.train_gpt:
             eval_dataloaders_dict = {}
-            # eval_datasets = ['hotpot_qa', 'trivia_qa', 'gsm8k_dataset', 'truthful_qa', 'strategy_qa']
-            eval_datasets = ['strategy_qa']
+            eval_datasets = ['hotpot_qa', 'trivia_qa', 'gsm8k_dataset', 'truthful_qa', 'strategy_qa']
             original_dataset = train_config.dataset
             for dataset_name in eval_datasets:
                 train_config.dataset = dataset_name     
