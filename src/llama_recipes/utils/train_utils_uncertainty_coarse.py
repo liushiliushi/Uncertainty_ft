@@ -169,9 +169,6 @@ def train_chat(
                     loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
                 elif train_config.loss_type == 'sot':
                     norm_logit = torch.index_select(F.log_softmax(num_token1, dim=1), 1, num_indices1.squeeze(0))
-                    # print(norm_logit)
-                    # print(torch.argmax(norm_logit, dim=1))
-                    # print(y.squeeze())
                     smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                     smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
                     loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
@@ -317,10 +314,6 @@ def train_gpt(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
-                # TODO
-                # print(batch['input_ids'].shape[1])
-                # if batch['input_ids'].shape[1] > 350:
-                #     continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -342,17 +335,11 @@ def train_gpt(
                 if train_config.loss_type == 'brier':
                     num_conf1 = torch.index_select(num_token1, 1, num_indices1.squeeze(0)) # take out the logit of 0-9+1
                     num_conf1 = F.softmax(num_conf1, dim=1)
-                    # compute the loss
-                    # num_conf1[:,10] *= num_conf2[:,0]
-                    # num_conf1[:,1] *= num_conf2[:,1]
                     y_expanded = y.expand(y.shape[0], 10)
                     squared_differences = (y_expanded - scores) ** 2
                     loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
                 elif train_config.loss_type == 'sot':
                     norm_logit = torch.index_select(F.log_softmax(num_token1, dim=1), 1, num_indices1.squeeze(0))
-                    # print(norm_logit)
-                    # print(torch.argmax(norm_logit, dim=1))
-                    # print(y.squeeze())
                     smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                     smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
                     loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()

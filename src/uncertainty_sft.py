@@ -35,7 +35,6 @@ from llama_recipes.utils.train_utils_uncertainty_coarse import (
 )
 from warnings import warn
 import sys
-from copy import deepcopy
 
 def setup_wandb(train_config, **kwargs):
     try:
@@ -108,8 +107,6 @@ def main(**kwargs):
     dataset_train = get_preprocessed_dataset2(tokenizer, 'train', train_config).shuffle(seed=42)
     accelerator.print(f"--> Training Set Length = {len(dataset_train)}")
 
-    
-
     # 若使用 packing strategy
     if train_config.batching_strategy == "packing":
         dataset_train = ConcatDataset2(dataset_train, chunk_size=train_config.context_length)
@@ -138,9 +135,6 @@ def main(**kwargs):
         batch_size=train_config.batch_size_testing
     )
 
-    # For train_gpt, prepare 5 validation dataloaders for different datasets
-    
-        
     if train_config.run_validation:
         if train_config.train_gpt:
             eval_dataloaders_dict = {}
@@ -178,7 +172,6 @@ def main(**kwargs):
             accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
             if len(eval_dataloader) == 0:
                 raise ValueError("Validation set size too small to form a single batch.")
-
 
     # 加载/初始化模型
     use_cache = None  # accelerate 下不需要专门设置
@@ -235,18 +228,17 @@ def main(**kwargs):
     model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, 
     )
-    
-    # Prepare the eval dataloaders with accelerator
     if train_config.run_validation and train_config.train_gpt:
         for dataset_name in eval_dataloaders_dict:
             eval_dataloaders_dict[dataset_name] = accelerator.prepare(eval_dataloaders_dict[dataset_name])
     else:
         eval_dataloader = accelerator.prepare(eval_dataloader)
+
     clear_gpu_cache()  # 清理一次缓存
 
     # 开始训练
     if train_config.train_coarse:
-        from llama_recipes.utils.test import (
+        from llama_recipes.utils.train_utils_uncertainty_coarse import (
             train_chat,
             train_gpt
         )
@@ -312,6 +304,7 @@ def main(**kwargs):
                 wandb_run,
             )
     print("training ended")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

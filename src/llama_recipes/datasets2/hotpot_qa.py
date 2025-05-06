@@ -34,31 +34,18 @@ system_prompt = """You will be asked reasoning questions. Please respond to the 
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: 0%"""
 
-system_prompt_reflection = """You will be asked reasoning questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Finally, please provide your confidence (0%-100%) to your answer. 
-            If the confidence is less than 50%, please revise your response and provide a better one.
+system_prompt_reflection = """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
 
-            Here are some examples:
+            Here is the example:
 
             Question: Who wrote Paradise Lost?
             Response: The author of Paradise Lost was Percy Bysshe Shelley.
             Confidence: 40%
-            The response is less than 50%. I will revise the response.
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
             Confidence: 90%
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Confidence: 100%
-            The confidence is larger than 50%.
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Confidence: 0%
-            The response is less than 50%. I will revise the response.
-            Response: There are eight planets in our solar system.
-            Confidence: 100%
+            
             """
 system_prompt_linguistic = """You will be asked reasoning questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
@@ -241,7 +228,7 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
                 path = "../dataset/hotpot_qa/train_response_gpt.jsonl"
             else:
                 path = "../dataset/hotpot_qa/train_Qwen_temp=0_10000.jsonl"
-        dataset = datasets.load_dataset('json', data_files=path, split='train[:200]')
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         if train_config.train_gpt:
             path = "../dataset/hotpot_qa/validation_response_gpt.jsonl"

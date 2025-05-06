@@ -157,7 +157,7 @@ def main(**kwargs):
                                      max_tokens=2048)
     prompts = dataset['prompt']
     prompts = [json.loads(item) for item in dataset['prompt']]
-    if "gpt" in train_config.model_name:
+    if "gpt" in train_config.model_name or "deepseek" in train_config.model_name:
         try:
             from openai import AzureOpenAI, OpenAI
             
@@ -172,6 +172,7 @@ def main(**kwargs):
             except (KeyError, ImportError):
                 client = OpenAI(
                     api_key=os.environ['OPENAI_API_KEY'],
+                    base_url="https://api.deepseek.com"
                 )
                 model_name = os.environ.get('OPENAI_DEPLOYMENT_NAME', train_config.model_name)
                 
@@ -215,7 +216,7 @@ def main(**kwargs):
             trust_remote_code=True,
             gpu_memory_utilization=0.95,
             enforce_eager=True,
-    )
+        )
         outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
 
         _, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(dataset['question'], outputs, dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)

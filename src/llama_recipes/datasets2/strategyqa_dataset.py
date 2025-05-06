@@ -120,7 +120,7 @@ def get_strategyqa(tokenizer, split, train_config, on_policy=False):
         if train_config.train_gpt:
             path = '../dataset/StrategyQA/validation_gpt_temp=0_1000.jsonl'
         else:
-            path = '../dataset/StrategyQA/validation_temp=0_1000.jsonl'
+            path = '../dataset/StrategyQA/task.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')
 
     def apply_prompt_template(sample):
