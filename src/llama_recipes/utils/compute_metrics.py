@@ -201,7 +201,7 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
             bin_accuracies[i] /= bin_counts[i]
     
     # Plot perfect calibration line
-    plt.plot([0, 1], [0, 1], '--', color='red', label='Perfect Calibration', linewidth=2)
+    plt.plot([0, 1], [0, 1], '--', color='red',linewidth=2)
     
     # Plot bars for each bin
     for i in range(n_bins):
@@ -220,20 +220,20 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
         
         # Draw the output (blue) part - representing the measured accuracy
         plt.bar(bin_center, min(accuracy, expected_confidence), width=bin_width, color='#3274A1', 
-                align='center', label='Output' if i == 0 else "")
+                align='center')
         
         # If expected confidence > accuracy, draw the gap (red) part - overconfidence
         if expected_confidence > accuracy:
             # The gap is the difference between expected confidence and actual accuracy
             gap = expected_confidence - accuracy
             plt.bar(bin_center, gap, width=bin_width, bottom=accuracy, 
-                    color='#E15759', align='center', label='Gap' if i == 0 else "")
+                    color='#E15759', align='center', )
         # If expected confidence < accuracy, draw the gap (green) part - underconfidence
         elif expected_confidence < accuracy:
             # The gap is the difference between actual accuracy and expected confidence
             gap = accuracy - expected_confidence
             plt.bar(bin_center, gap, width=bin_width, bottom=expected_confidence, 
-                    color='#E15759', align='center')
+                    color='#CB0404', align='center')
     
     # Add title and labels
     # plt.title('ECE Diagram', fontsize=18, fontweight='bold')
