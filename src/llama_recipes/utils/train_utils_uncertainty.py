@@ -560,7 +560,8 @@ def evaluation_chat(
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-            probs, y = accelerator.gather_for_metrics((probs, y))
+            # TODO:
+            # probs, y = accelerator.gather_for_metrics((probs, y))
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
@@ -1322,19 +1323,19 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
-    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+    responses_stage1, out_response_cleans_stage1, questions_stage1, out_confidences_stage1, y_stage1, y_None_stage1, confidences_None_stage1, correct_answer_cleans_stage1 = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses_stage1, confidences_None_stage1, y_None_stage1):
         wan_table.add_data(response, confidence, y_item)        
 
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    # Compute ECE and ROC-AUC score for stage 1
     wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
 
-    number = len(y)
+    number = len(y_stage1)
     print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    val_metrics = compute_conf_metrics(y_stage1, out_confidences_stage1, len(prompts))
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(y_stage1, out_confidences_stage1, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y_stage1, out_confidences_stage1, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
@@ -1350,74 +1351,103 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
                         f'origin/score_{train_config.dataset}': score,
                     }, commit=False)
     del llm
+    
+    # 第二阶段: 只对置信度低的样本使用GPT重新生成
     original = False
-    prompts2 = []
+    
+    # 筛选出置信度低于0.5的样本索引
+    low_conf_indices = [i for i, conf in enumerate(out_confidences_stage1) if conf < 0.5]
+    high_conf_indices = [i for i, conf in enumerate(out_confidences_stage1) if conf >= 0.5]
+    
+    # 为置信度低的样本准备提示
+    prompts_low_conf = []
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
-        if confidence < 0.5:
-            prompt[0]['content'] = reflection_prompt
-            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
-            prompt[2]['content'] = 'Reflection: The response is '
-            prompts2.append(prompt)
-        else:
-            continue
-            # prompts2.append(prompt)
-    wan_table2 = wandb.Table(columns=['response','confidence', 'y'])
+    for idx in low_conf_indices:
+        prompt = prompts[idx].copy()
+        prompt[0]['content'] = reflection_prompt
+        prompt[1]['content'] += ('\nResponse:' + out_response_cleans_stage1[idx] + str(int(out_confidences_stage1[idx] * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+        prompt[2]['content'] = 'Reflection: The response is '
+        prompts_low_conf.append(prompt)
     
-    # 使用GPT API替代本地LLM
-    try:
-        from openai import AzureOpenAI
-        client = AzureOpenAI(
-            api_key=os.environ['OPENAI_API_KEY'],
-            api_version=os.environ['OPENAI_API_VERSION'],
-            azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
-        )
-    except:
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=os.environ['OPENAI_API_KEY'],
-        )
+    # 使用GPT API生成置信度低的样本的新回答
+    wan_table2 = wandb.Table(columns=['response', 'confidence', 'y', 'source'])
     
-    # 直接使用prompts2列表，不需要tokenizer.apply_chat_template
-    # prompts2已经是正确的消息格式列表：[{"role": "system", "content": ...}, ...]
-    outputs = []
-    for prompt in prompts2:
+    # 记录两个阶段的所有结果
+    final_responses = []
+    final_confidences = []
+    final_y = []
+    
+    # 首先添加置信度高的原始结果
+    for idx in high_conf_indices:
+        final_responses.append(responses_stage1[idx])
+        final_confidences.append(out_confidences_stage1[idx])
+        final_y.append(y_stage1[idx])
+        wan_table2.add_data(responses_stage1[idx], confidences_None_stage1[idx], y_None_stage1[idx], "stage1-high")
+    
+    # 如果有置信度低的样本，使用GPT生成
+    if prompts_low_conf:
         try:
-            response = client.chat.completions.create(
-                model=os.environ.get('OPENAI_DEPLOYMENT_NAME'),
-                messages=prompt,
-                temperature=train_config.temperature,
-                max_tokens=400,
-                top_p=1.0,
-                n=1
+            from openai import AzureOpenAI
+            client = AzureOpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+                api_version=os.environ['OPENAI_API_VERSION'],
+                azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
             )
-            print(response.choices[0].message.content)
-            outputs.append(response.choices[0].message.content)
-        except Exception as e:
-            print(f"Error generating response with GPT API: {e}")
-            outputs.append("")
+        except:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+            )
+        
+        outputs_low_conf = []
+        for prompt in prompts_low_conf:
+            try:
+                response = client.chat.completions.create(
+                    model=os.environ.get('OPENAI_DEPLOYMENT_NAME'),
+                    messages=prompt,
+                    temperature=train_config.temperature,
+                    max_tokens=400,
+                    top_p=1.0,
+                    n=1
+                )
+                outputs_low_conf.append(response.choices[0].message.content)
+            except Exception as e:
+                print(f"Error generating response with GPT API: {e}")
+                outputs_low_conf.append("")
+        
+        # 提取低置信度样本对应的问题和正确答案
+        questions_low_conf = [test_dataset['question'][idx] for idx in low_conf_indices]
+        correct_answers_low_conf = [test_dataset['correct_answer'][idx] for idx in low_conf_indices]
+        
+        # 处理GPT生成的结果
+        responses_stage2, out_response_cleans_stage2, questions_stage2, out_confidences_stage2, y_stage2, y_None_stage2, confidences_None_stage2, correct_answer_cleans_stage2 = confidence_replace_gpt(questions_low_conf, outputs_low_conf, correct_answers_low_conf, dataset_name=train_config.dataset, vllm=False)
+        
+        # 添加置信度低的GPT生成结果
+        for i in range(len(responses_stage2)):
+            final_responses.append(responses_stage2[i])
+            final_confidences.append(out_confidences_stage2[i])
+            final_y.append(y_stage2[i])
+            wan_table2.add_data(responses_stage2[i], confidences_None_stage2[i], y_None_stage2[i], "stage2-gpt")
     
-    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_gpt(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset, vllm=False)
-    for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table2.add_data(response, confidence, y_item)        
+    # 记录合并后的结果
+    wandb_run.log({f"Testing_{train_config.dataset}/combined": wan_table2})
 
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table2})
-
-    number = len(y)
-    print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts)) 
-    # Plot metrics if wandb is enabled
+    # 计算合并后的指标
+    number = len(final_y)
+    print(f"Combined number: {number}")
+    val_metrics = compute_conf_metrics(final_y, final_confidences, number)
+    
+    # 可视化合并后的结果
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage2", wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(final_y, final_confidences, "combined", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(final_y, final_confidences, "combined", wandb_run, original, train_config.dataset)
 
-    # Calculate scores
+    # 计算最终分数
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
     score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
-    # Log metrics to wandb
+    # 记录最终指标
     if wandb_run:
         wandb_run.log({
                         f'test/number_{train_config.dataset}': number,
@@ -1426,9 +1456,11 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
                         f'test/ece_{train_config.dataset}': ece_score,
                         f'test/auroc_{train_config.dataset}': roc_auc_score,
                         f'test/score_{train_config.dataset}': score,
+                        f'test/low_conf_count': len(low_conf_indices),
+                        f'test/high_conf_count': len(high_conf_indices),
                     }, commit=False)
     
-    return responses
+    return final_responses
 
 
 def freeze_transformer_layers(model, num_layer):

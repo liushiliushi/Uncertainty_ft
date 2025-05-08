@@ -236,7 +236,8 @@ def plot_ece_diagram(y_true, y_confs, score_type, wandb_run, original, dataset):
                     color='#CB0404', align='center')
     
     # Add title and labels
-    # plt.title('ECE Diagram', fontsize=18, fontweight='bold')
+    # TODO
+    # plt.title('TriviaQA', fontsize=18, fontweight='bold')
     plt.xlabel('Confidence', fontsize=18, fontweight='bold')
     plt.ylabel('Accuracy', fontsize=18, fontweight='bold')
     
