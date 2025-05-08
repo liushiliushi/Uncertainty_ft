@@ -1328,9 +1328,9 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     for idx in low_conf_indices:
         prompt = prompts[idx].copy()
-        prompt[0]['content'] = reflection_prompt
-        prompt[1]['content'] += ('\nResponse:' + out_response_cleans_stage1[idx] + str(int(out_confidences_stage1[idx] * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
-        prompt[2]['content'] = 'Reflection: The response is '
+        # prompt[0]['content'] = reflection_prompt
+        # prompt[1]['content'] += ('\nResponse:' + out_response_cleans_stage1[idx] + str(int(out_confidences_stage1[idx] * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+        # prompt[2]['content'] = 'Reflection: The response is '
         prompts_low_conf.append(prompt)
     
     # 使用GPT API生成置信度低的样本的新回答
