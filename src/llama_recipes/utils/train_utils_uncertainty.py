@@ -1254,33 +1254,15 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
     """
     reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
 
-            Here are the examples:
+            Here is the example:
 
-            1. 
             Question: Who wrote Paradise Lost?
             Response: The author of Paradise Lost was Percy Bysshe Shelley.
             Confidence: 40%
-            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
             Reflection: The response is less than 50%. 
             Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
             Confidence: 90%
-
-            2.
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Confidence: 40%
-            If the confidence is less than 50%, analyze the answer and provide a better one. But if you think the previous answer is correct, just provide the previous answer.
-            Reflection: The response is less than 50%. 
-            Response: Algeria gained independence from France in 1962 after a prolonged and violent struggle known as the Algerian War of Independence (1954–1962). The previous answer was correct.
-            Confidence: 95%
-
-            3.
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Confidence: 0%
-            Reflection: The response is less than 50%. 
-            Response: There are eight planets in our solar system.
-            Confidence: 100%
             """
     original = True
     llm = LLM(
