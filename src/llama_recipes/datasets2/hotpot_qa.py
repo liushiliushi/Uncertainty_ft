@@ -67,23 +67,7 @@ system_prompt_linguistic = """You will be asked reasoning questions. Please resp
             Question: How many planets are in our solar system?
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: low"""
-system_prompt_correct = """You will be asked reasoning questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Finally, please provide the judgement of correct or incorrect.
 
-            Here are some examples:
-
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Judgement: correct
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Judgement: correct
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Judgement: incorrect"""
 
 system_prompt_coarse = """You will be asked reasoning questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
@@ -104,23 +88,6 @@ system_prompt_coarse = """You will be asked reasoning questions. Please respond 
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Confidence: 0"""
 
-system_prompt_yes = """You will be asked reasoning questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Finally, please judge whether your answer is correct with "yes" or "no".
-
-            Here are some examples:
-
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Correct: yes
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Correct: yes
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Correct: no"""
 def extract_answer(completion):
     match = ANS_RE.search(completion)
     if match:
@@ -165,33 +132,14 @@ def get_hotpot_qa_reflection(tokenizer, split, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_hotpot_qa_yes(tokenizer, split, vllm=True):
-    path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
-    dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
-    def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt_yes},
-                  {"role": "user", "content": f"Question: {sample['question']}"},
-                  {"role": "assistant", "content": f"Response:"}
-                  ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
-        else:
-            prompt = json.dumps(prompt)
-        return {
-            'question': json.dumps(sample['question']),
-            "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(sample['correct_answer']),
-        }
-    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    return dataset
     
 
 def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
     
     if split == 'train':
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:1000]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa",'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='train[:12000]', trust_remote_code=True)
     elif split == "validation":
-        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:1000]', trust_remote_code=True)
+        dataset = datasets.load_dataset("hotpotqa/hotpot_qa", 'distractor', cache_dir="../dataset/Hotpot_qa_raw", split='validation[:2000]', trust_remote_code=True)
     def apply_prompt_template(sample):
         if "Ministral" in train_config.model_name:
             prompt = [
@@ -217,26 +165,26 @@ def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
 def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
         if "Ministral" in train_config.model_name:
-            path = "../dataset/hotpot_qa/train_ministral_temp=0_10000.jsonl"
+            path = "../dataset/hotpot_qa/train_ministral_temp=0.jsonl"
         elif "Llama-3.1" in train_config.model_name:
             if train_config.train_gpt:
                 path = "../dataset/hotpot_qa/train_response_gpt.jsonl"
             else:
-                path = "../dataset/hotpot_qa/train_llama_temp=0_10000.jsonl"
+                path = "../dataset/hotpot_qa/train_llama_temp=0.jsonl"
         elif "Qwen" in train_config.model_name:
             if train_config.train_gpt:
                 path = "../dataset/hotpot_qa/train_response_gpt.jsonl"
             else:
-                path = "../dataset/hotpot_qa/train_Qwen_temp=0_10000.jsonl"
+                path = "../dataset/hotpot_qa/train_Qwen_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         if train_config.train_gpt:
             path = "../dataset/hotpot_qa/validation_response_gpt.jsonl"
         else:
-            path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
+            path = "../dataset/hotpot_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     else:
-        path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
+        path = "../dataset/hotpot_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
     def apply_prompt_template(sample):
