@@ -62,28 +62,21 @@ def setup_wandb(train_config, **kwargs):
 
 def main(**kwargs):
 
-    # 加载 config（原先有 FSDP_CONFIG，这里省略）
     train_config = TRAIN_CONFIG()
     update_config(train_config, **kwargs)
     
-    # 设置随机种子
     if is_xpu_available():
         torch.xpu.manual_seed(train_config.seed)
     else:
         torch.manual_seed(train_config.seed)
     random.seed(train_config.seed)
-  
-    # 若有可用 GPU，设置一下可见设备（如果你使用 accelerate launcher，通常无需手动设置）
-    # os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
 
     accelerator = Accelerator()
 
-    # 只有在主进程时才进行 wandb 初始化
     wandb_run = None
     if train_config.use_wandb and accelerator.is_main_process:
         wandb_run = setup_wandb(train_config, **kwargs)
 
-    # 设置量化配置
     bnb_config = None
     if train_config.quantization:
         if type(train_config.quantization) == type(True):
@@ -91,23 +84,19 @@ def main(**kwargs):
                 "Quantization (--quantization) is a boolean, please specify quantization as '4bit' or '8bit'. Defaulting to '8bit' but this might change in the future.",
                 FutureWarning)
             train_config.quantization = "8bit"
-        # 4bit / 8bit
         quant_config = QUANTIZATION_CONFIG()
         update_config(quant_config, **kwargs)
         bnb_config = quant_config.create_bnb_config(train_config.quantization)
 
-    # 加载 tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         train_config.model_name,
         padding_side='left'
     )
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # 准备数据集
     dataset_train = get_preprocessed_dataset2(tokenizer, 'train', train_config).shuffle(seed=42)
     accelerator.print(f"--> Training Set Length = {len(dataset_train)}")
 
-    # 若使用 packing strategy
     if train_config.batching_strategy == "packing":
         dataset_train = ConcatDataset2(dataset_train, chunk_size=train_config.context_length)
 
@@ -173,16 +162,14 @@ def main(**kwargs):
             if len(eval_dataloader) == 0:
                 raise ValueError("Validation set size too small to form a single batch.")
 
-    # 加载/初始化模型
-    use_cache = None  # accelerate 下不需要专门设置
-    # 加载/初始化模型
+    use_cache = None
     if "Llama-3.1" in train_config.model_name:
         model = LlamaForCausalLM.from_pretrained(
             train_config.model_name,
             quantization_config=bnb_config,
             use_cache=use_cache,
             attn_implementation="sdpa" if train_config.use_fast_kernels else None,
-            device_map=None,  # accelerate 内部会处理
+            device_map=None,
             torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
         )
     else:
@@ -194,16 +181,13 @@ def main(**kwargs):
             device_map=None
         )
 
-    # embedding resize
     if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
         accelerator.print("WARNING: Resizing the embedding matrix to match the tokenizer vocab size.")
         model.resize_token_embeddings(len(tokenizer))
 
-    # 看一下模型大小
     if accelerator.is_main_process:
         print_model_size(model, train_config, rank=0)
 
-    # PEFT
     if train_config.use_peft:
         if train_config.from_peft_checkpoint:
             print(f"Loading peft from {train_config.from_peft_checkpoint}")
@@ -234,9 +218,8 @@ def main(**kwargs):
     else:
         eval_dataloader = accelerator.prepare(eval_dataloader)
 
-    clear_gpu_cache()  # 清理一次缓存
+    clear_gpu_cache()
 
-    # 开始训练
     if train_config.train_coarse:
         from llama_recipes.utils.train_utils_uncertainty_coarse import (
             train_chat,
@@ -246,14 +229,14 @@ def main(**kwargs):
             results = train_gpt(
                 model,
                 train_dataloader,
-                eval_dataloaders_dict,  # Pass dictionary of dataloaders
+                eval_dataloaders_dict,
                 test_dataloader,
                 tokenizer,
                 optimizer,
                 scheduler,
                 train_config.gradient_accumulation_steps,
                 train_config,
-                accelerator,         # 传入 accelerator
+                accelerator,
                 wandb_run,
             )
         else:
@@ -267,7 +250,7 @@ def main(**kwargs):
                 scheduler,
                 train_config.gradient_accumulation_steps,
                 train_config,
-                accelerator,         # 传入 accelerator
+                accelerator,
                 wandb_run,
             )
     else:
@@ -279,14 +262,14 @@ def main(**kwargs):
             results = train_gpt(
             model,
             train_dataloader,
-            eval_dataloaders_dict,  # Pass dictionary of dataloaders
+            eval_dataloaders_dict,
             test_dataloader,
             tokenizer,
             optimizer,
             scheduler,
             train_config.gradient_accumulation_steps,
             train_config,
-            accelerator,         # 传入 accelerator
+            accelerator,
             wandb_run,
         )
         else:
@@ -300,7 +283,7 @@ def main(**kwargs):
                 scheduler,
                 train_config.gradient_accumulation_steps,
                 train_config,
-                accelerator,         # 传入 accelerator
+                accelerator,
                 wandb_run,
             )
     print("training ended")

@@ -64,28 +64,21 @@ def setup_wandb(train_config, **kwargs):
 
 def main(**kwargs):
 
-    # 加载 config（原先有 FSDP_CONFIG，这里省略）
     train_config = TRAIN_CONFIG()
     update_config(train_config, **kwargs)
     
-    # 设置随机种子
     if is_xpu_available():
         torch.xpu.manual_seed(train_config.seed)
     else:
         torch.manual_seed(train_config.seed)
     random.seed(train_config.seed)
 
-    # 若有可用 GPU，设置一下可见设备（如果你使用 accelerate launcher，通常无需手动设置）
-    # os.environ["CUDA_VISIBLE_DEVICES"] = train_config.cuda
-
     accelerator = Accelerator()
 
-    # 只有在主进程时才进行 wandb 初始化
     wandb_run = None
     if train_config.use_wandb and True:
         wandb_run = setup_wandb(train_config, **kwargs)
 
-    # 加载 tokenizer  
     tokenizer = AutoTokenizer.from_pretrained(
         train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, 
         padding_side='left'
