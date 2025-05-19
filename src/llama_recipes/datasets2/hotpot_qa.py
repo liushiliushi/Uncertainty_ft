@@ -116,7 +116,7 @@ def normalize_answer(s):
 
 
 def get_hotpot_qa_reflection(tokenizer, split, vllm=True):
-    path = "../dataset/hotpot_qa/validation_response_temp=0_1500.jsonl"
+    path = "../dataset/hotpot_qa/validation_response_temp=0.jsonl"
     dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
     def apply_prompt_template(sample):
         prompt = [{'role': 'system', 'content': system_prompt_reflection},
@@ -213,8 +213,6 @@ def get_hotpot_qa(tokenizer, split, train_config):
         global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
-        elif train_config.test_correct:
-            system_prompt = system_prompt_correct
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},

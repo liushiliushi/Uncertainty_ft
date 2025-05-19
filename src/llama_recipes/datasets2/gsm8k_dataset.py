@@ -122,7 +122,7 @@ def get_gsm8k_dataset2(tokenizer, split, train_config):
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         if train_config.train_gpt:
-            path = '../dataset/grade_school_math/data/validation_gpt_temp=0_1000.jsonl'
+            path = '../dataset/grade_school_math/data/validation_gpt_temp=0.jsonl'
         else:
             path = '../dataset/grade_school_math/data/test_response_temp=0.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')

@@ -78,7 +78,7 @@ def get_strategyqa(tokenizer, split, train_config, on_policy=False):
         print("Error! Strategy QA is not used for training.")
     else:
         if train_config.train_gpt:
-            path = '../dataset/StrategyQA/validation_gpt_temp=0_1000.jsonl'
+            path = '../dataset/StrategyQA/validation_gpt_temp=0.jsonl'
         else:
             path = '../dataset/StrategyQA/task.jsonl'
         dataset = datasets.load_dataset('json', data_files=path, split='train')

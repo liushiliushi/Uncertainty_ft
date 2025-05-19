@@ -142,7 +142,7 @@ def get_truthful_qa(tokenizer, split, train_config):
         dataset = datasets.load_dataset('json', data_files=path, split='train')
     elif split == 'val':
         if train_config.train_gpt:
-            path = "../dataset/truthful_qa/validation_gpt_temp=0_1000.jsonl"
+            path = "../dataset/truthful_qa/validation_gpt_temp=0.jsonl"
         else:
             path = "../dataset/truthful_qa/validation_response_temp=0.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')

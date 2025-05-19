@@ -31,7 +31,7 @@ def get_preprocessed_dataset2(
     tokenizer, split, train_config
 ) -> torch.utils.data.Dataset:
     return DATASET_PREPROC[train_config.dataset](
-            tokenizer, split, train_config, train_config.on_policy
+            tokenizer, split, train_config
         )
 
 
