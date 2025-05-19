@@ -1421,17 +1421,17 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
             final_responses.append(responses_stage1[idx])
             final_confidences.append(out_confidences_stage1[idx])
             final_y.append(y_stage1[idx])
-            wan_table2.add_data(responses_stage1[idx], confidences_None_stage1[idx], y_None_stage1[idx], "stage1-original")
+            # wan_table2.add_data(responses_stage1[idx], confidences_None_stage1[idx], y_None_stage1[idx], "stage1-original")
         
         # 添加GPT生成的结果（仅使用当前样本数量对应的部分）
         for i in range(min(actual_count, len(gpt_responses))):
             final_responses.append(gpt_responses[i])
             final_confidences.append(gpt_confidences[i])
             final_y.append(gpt_y[i])
-            wan_table2.add_data(gpt_responses[i], gpt_confidences[i], gpt_y[i], "stage2-gpt")
+            # wan_table2.add_data(gpt_responses[i], gpt_confidences[i], gpt_y[i], "stage2-gpt")
         
         # 记录这个特定样本数量的结果
-        wandb_run.log({f"Testing_{train_config.dataset}/samples_{actual_count}": wan_table2})
+        # wandb_run.log({f"Testing_{train_config.dataset}/samples_{actual_count}": wan_table2})
 
         # 计算合并后的指标
         val_metrics = compute_conf_metrics(final_y, final_confidences, len(final_y))
@@ -1472,6 +1472,14 @@ def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, origin
     
     # 记录汇总表格
     wandb_run.log({f"metrics_summary_{train_config.dataset}": metrics_table})
+    
+    # 打印不同修改数目对应的准确率汇总表格
+    print("\n====== 不同修改数目对应的指标汇总 ======")
+    print("| 修改样本数 | Accuracy | Accuracy2 | ECE  | AUROC | 总分数 |")
+    print("|------------|----------|-----------|------|-------|--------|")
+    for count, acc, acc2, ece, auroc, score in metrics_table.data:
+        print(f"| {count:10d} | {acc:.4f}  | {acc2:.4f}   | {ece:.4f} | {auroc:.4f} | {score:.4f} |")
+    print("================================================")
     
     # 返回最后一次评估的结果
     return final_responses
