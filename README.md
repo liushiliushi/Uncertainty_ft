@@ -222,11 +222,22 @@ Key parameters for fine-tuning:
 
 To evaluate the fine-tuned model:
 
+
+Validate on confidence levels 0-100:
 ```bash
 python inference.py \
     --model_name /path/to/your/checkpoint \
     --dataset dataset_name \
     --use_wandb \
+```
+
+Validate on confidence levels high/medium/low:
+```bash
+python inference.py \
+    --model_name /path/to/your/checkpoint \
+    --dataset dataset_name \
+    --use_wandb \
+    --test_linguistic True
 ```
 
 You can just run these commands to see the performance on all the datasets:
@@ -236,7 +247,7 @@ cd src
 ./inference.sh /path/to/your/checkpoint
 ```
 
-To evaluate the model cascading performance, run:
+To evaluate the model's cascading performance, run:
 
 ```bash
 python inference_gpt.py \
