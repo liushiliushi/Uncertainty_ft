@@ -1,4 +1,3 @@
-
 import copy
 import datasets
 import os
@@ -39,27 +38,7 @@ system_prompt = """You will be asked trivia questions. Please respond to the bes
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Final answer: NONE
             Confidence: 0%"""
-# system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
-#             Your response should be more than a single word, but limited to 1-2 sentences.
-#             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
-#             Finally, please provide your confidence (high, medium, low)) to your answer.
 
-#             Here are some examples:
-
-#             Question: Who wrote Paradise Lost?
-#             Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-#             Final answer: John Milton
-#             Confidence: high
-
-#             Question: Which colonial power did Algeria gain independence from in 1962? 
-#             Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-#             Final answer: France
-#             Confidence: high
-
-#             Question: How many planets are in our solar system?
-#             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-#             Final answer: NONE
-#             Confidence: low"""
 
 system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
             Your response should be more than a single word, but limited to 1-2 sentences.
@@ -87,67 +66,7 @@ system_prompt_linguistic = """You will be asked trivia questions. Please respond
             Final answer: NONE
             Confidence: low"""
 
-system_prompt_correct = """You will be asked trivia questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
-            Finally, please provide the judgement of correct (50%-100% confidence) or incorrect (0%-50% confidence).
 
-                    
-            Here are some examples:
-
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Final answer: John Milton
-            Judgement: correct
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Final answer: France
-            Judgement: correct
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Final answer: NONE
-            Judgement: incorrect"""
-
-system_prompt_yes = """You will be asked trivia questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
-            Finally, please judge whether your answer is correct with "yes" or "no".
-
-            Here are some examples:
-
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Final answer: John Milton
-            Correct: yes
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Final answer: France
-            Correct: yes
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Final answer: NONE
-            Correct: no"""
-system_prompt_cons = """You will be asked trivia questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Then please extract a single answer from the your response. If no answer is present, please write "NONE".
-
-            Here are some examples:
-
-            Question: Who wrote Paradise Lost?
-            Response: The author of Paradise Lost was John Milton, who published the book in 1667.
-            Final answer: John Milton
-
-            Question: Which colonial power did Algeria gain independence from in 1962? 
-            Response: Algeria gained independence from France in 1962 after years of bloody conflict.
-            Final answer: France
-
-            Question: How many planets are in our solar system?
-            Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
-            Final answer: NONE"""
 def extract_answer(completion):
     match = ANS_RE.search(completion)
     if match:
@@ -177,51 +96,7 @@ def normalize_answer(s):
 
     return white_space_fix(remove_articles(handle_punc(lower(replace_underscore(s))))).strip()
 
-def get_trivia_qa_cons(tokenizer, split, vllm=True):
-    
-    path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"
-    dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
 
-    def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt_cons},
-            {"role": "user", "content":  f"Question: {sample['question']}"},
-            {"role": "assistant", "content": f"Response:"},
-            ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True, max_length=8192)
-        else:
-            prompt = json.dumps(prompt)
-        return {
-            'question': json.dumps(sample['question']),
-            "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(sample['correct_answer']),
-        }
-
-    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    return dataset
-
-def get_trivia_qa_yes(tokenizer, split, vllm=True):
-    
-    path = "../dataset/trivia_qa/validation_response_temp=0.1_10000.jsonl"
-    dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
-
-    def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt_yes},
-            {"role": "user", "content":  f"Question: {sample['question']}"},
-            {"role": "assistant", "content": f"Response:"},
-            ]
-        if vllm:
-            prompt = tokenizer.apply_chat_template(prompt, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True, max_length=8192)
-        else:
-            prompt = json.dumps(prompt)
-        return {
-            'question': json.dumps(sample['question']),
-            "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(sample['correct_answer']),
-        }
-
-    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    return dataset
 
 def get_trivia_qa_raw(tokenizer, split, train_config, vllm=True):
     
@@ -247,7 +122,7 @@ def get_trivia_qa_raw(tokenizer, split, train_config, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
+def get_trivia_qa(tokenizer, split, train_config):
     if split == 'train':
         path = "../dataset/trivia_qa/train_response_temp=0.1_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
@@ -293,8 +168,6 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
         global system_prompt
         if train_config.test_linguistic:
             system_prompt = system_prompt_linguistic
-        elif train_config.test_correct:
-            system_prompt = system_prompt_correct
         if "Ministral" in train_config.model_name:
             prompt = [
                 {"role": "user", "content": f"{system_prompt}\n\nQuestion: {sample['question']}"},
@@ -310,17 +183,11 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
             "prompt": json.dumps(prompt),
             "correct_answer": json.dumps(sample['correct_answer']),
         }
-    if on_policy == False:
-        if split == 'test':
-            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
-        else:
-            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    else:
-        if split == 'val':
-            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-        else:
-            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
 
+    if split == 'test':
+        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    else:
+        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
@@ -334,13 +201,10 @@ def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
             }
 
         return sample
-    if on_policy == False:
-        if split == 'test':
-            dataset = dataset
-        else:
-            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+
+    if split == 'test':
+        dataset = dataset
     else:
-        if split == 'val':
-            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     return dataset
 

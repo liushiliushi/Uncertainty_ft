@@ -157,7 +157,7 @@ def main(**kwargs):
                                      max_tokens=2048)
     prompts = dataset['prompt']
     prompts = [json.loads(item) for item in dataset['prompt']]
-    if "gpt" in train_config.model_name or "deepseek" in train_config.model_name:
+    if "gpt" in train_config.model_name:
         try:
             from openai import AzureOpenAI, OpenAI
             

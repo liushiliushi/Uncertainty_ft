@@ -60,27 +60,6 @@ system_prompt_linguistic = """You will be asked trivia questions. Please respond
             Response: No. Pure water lacks conductive ions.
             Final answer: No.
             Confidence: high"""
-system_prompt_yes = """You will be asked trivia questions. Please respond to the best of your ability.
-            Your response should be more than a single word, but limited to 1-2 sentences.
-            Then please provide the final answer of yes or no. If no answer is present, please write "NONE".
-            Finally, please judge whether your answer is correct with "yes" or "no".
-
-            Here are some examples:
-
-            Question: Can plants survive without sunlight?
-            Response: No. Photosynthesis depends on sunlight.
-            Final answer: No.
-            Correct: yes
-
-            Question: Do all mammals lay eggs?
-            Response: No. Only monotremes (e.g., platypus) do.
-            Final answer: No.
-            Correct: yes
-
-            Question: Is water a good conductor of electricity?
-            Response: No. Pure water lacks conductive ions.
-            Final answer: No.
-            Correct: no"""
 
 def extract_answer(completion):
     match = ANS_RE.search(completion)
@@ -91,25 +70,6 @@ def extract_answer(completion):
     else:
         return INVALID_ANS
 
-def get_strategyqa_yes(tokenizer, split, vllm=True):
-    path = '../dataset/StrategyQA/task.jsonl'
-    dataset = datasets.load_dataset('json', data_files=path, split='train')
-
-    def apply_prompt_template(sample):
-        prompt = [{'role': 'system', 'content': system_prompt_yes},
-            {"role": "user", "content":  f"Question: {sample['input']}"},
-            {"role": "assistant", "content": f"Response:"},
-            ]
-        prompt = json.dumps(prompt)
-        correct_answer = "yes" if sample['target_scores']["Yes"] == 1 else "no"
-        return {
-            'question': json.dumps(sample['input']),
-            "prompt": json.dumps(prompt),
-            "correct_answer": json.dumps(correct_answer),
-        }
-
-    dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    return dataset
 
 def get_strategyqa(tokenizer, split, train_config, on_policy=False):
     if train_config.test_linguistic:

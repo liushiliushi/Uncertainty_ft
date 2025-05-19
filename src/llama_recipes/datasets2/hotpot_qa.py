@@ -162,7 +162,7 @@ def get_hotpot_qa_raw(tokenizer, split, train_config, vllm=True):
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
 
-def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
+def get_hotpot_qa(tokenizer, split, train_config):
     if split == 'train':
         if "Ministral" in train_config.model_name:
             path = "../dataset/hotpot_qa/train_ministral_temp=0.jsonl"
@@ -230,17 +230,11 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
             "prompt": json.dumps(prompt),
             "correct_answer": json.dumps(sample['correct_answer']),
         }
-    if on_policy == False:
-        if split == 'test':
-            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
-        else:
-            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-    else:
-        if split == 'val':
-            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
-        else:
-            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
 
+    if split == 'test':
+        dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+    else:
+        dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
 
     def tokenize_add_label(sample):
         prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
@@ -258,12 +252,9 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
             }
 
         return sample
-    if on_policy == False:
-        if split == 'test':
-            dataset = dataset
-        else:
-            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+
+    if split == 'test':
+        dataset = dataset
     else:
-        if split == 'val':
-            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+        dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     return dataset

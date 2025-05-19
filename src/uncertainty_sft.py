@@ -102,15 +102,7 @@ def main(**kwargs):
 
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train")
 
-    if train_config.on_policy:
-        train_dataloader = torch.utils.data.DataLoader(
-            dataset_train,
-            num_workers=0,
-            pin_memory=True,
-            batch_sampler=train_dl_kwargs['batch_sampler'],
-        )
-    else:
-        train_dataloader = torch.utils.data.DataLoader(
+    train_dataloader = torch.utils.data.DataLoader(
             dataset_train,
             num_workers=0,
             pin_memory=True,

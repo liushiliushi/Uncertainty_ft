@@ -8,8 +8,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime
 import contextlib
-# from vllm import LLM
-# from vllm.lora.request import LoRARequest
 import torch
 import torch.cuda.nccl as nccl
 import torch.distributed as dist
@@ -33,9 +31,6 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
 
 @contextlib.contextmanager
 def profile(cfg, accelerator=None):
-    """
-    兼容 accelerate 的简易 profiler/flop 计数器上下文管理。
-    """
     use_profiler: bool = cfg.use_profiler
     use_flop_counter: bool = cfg.flop_counter
     if use_flop_counter and use_profiler:
@@ -57,7 +52,6 @@ def profile(cfg, accelerator=None):
             yield torch_profiler
     elif use_flop_counter:
         warmup_step = cfg.flop_counter_start
-        # 如果想在多卡时区分 rank，可用 accelerator.process_index
         with FlopMeasure(rank=0, warmup_step=warmup_step) as flop_counter:
             yield flop_counter
     else:
@@ -93,11 +87,10 @@ def train_chat(
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
-    # 根据是否使用混合精度来设置 autocast
     if train_config.use_fp16 and torch.cuda.is_available():
         autocast = torch.cuda.amp.autocast
     else:
-        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
+        autocast = contextlib.nullcontext
 
     train_prep = []
     train_loss = []
@@ -265,11 +258,10 @@ def train_gpt(
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
-    # 根据是否使用混合精度来设置 autocast
     if train_config.use_fp16 and torch.cuda.is_available():
         autocast = torch.cuda.amp.autocast
     else:
-        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
+        autocast = contextlib.nullcontext 
 
     train_prep = []
     train_loss = []
@@ -384,21 +376,15 @@ def train_gpt(
                 
                 accelerator.print(f"Evaluating on dataset: {dataset_name}")
                 
-                # 创建一个临时的 wandb 记录器，用于覆盖原来的 wandb 记录
                 temp_wandb_run = None
                 if accelerator.is_main_process and wandb_run:
-                    # 创建一个字典来存储当前数据集的指标
                     temp_metrics = {}
                     def temp_log(metrics_dict, commit=True):
-                        # 将指标临时存储在字典中，不直接记录到 wandb
                         temp_metrics.update(metrics_dict)
                     
-                    # 保存原始的 wandb 记录函数
                     original_log = wandb_run.log
-                    # 替换为临时函数
                     wandb_run.log = temp_log
                 
-                # 执行评估
                 eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                     model,
                     train_config,
@@ -408,34 +394,26 @@ def train_gpt(
                     wandb_run,
                 )
                 
-                # 收集并重新记录带数据集名称的指标
                 if accelerator.is_main_process and wandb_run:
-                    # 恢复原始的 wandb 记录函数
                     wandb_run.log = original_log
                     
-                    # 重新格式化指标，添加数据集名称前缀
                     dataset_metrics = {}
                     for key, value in temp_metrics.items():
                         if key.startswith('eval/'):
-                            # 将 'eval/' 替换为 'eval/{dataset_name}/'
                             new_key = f'eval/{dataset_name}/{key[5:]}'
                             dataset_metrics[new_key] = value
                         elif key.startswith('plots/'):
                             dataset_metrics[key] = value
                     
-                    # 记录特定数据集的指标
                     wandb_run.log(dataset_metrics)
                     
-                    # 提取关键指标用于计算总分
                     ece_score = temp_metrics.get('eval/ece', 0)
                     roc_auc_score = temp_metrics.get('eval/roc_auc', 0)
                     
-                    # 计算数据集得分
                     dataset_score = 2 * roc_auc_score - ece_score
                     dataset_scores[dataset_name] = dataset_score
                     total_eval_score += dataset_score
                     
-                    # 记录该数据集的总体得分和损失
                     wandb_run.log({
                         f'eval/{dataset_name}/score': dataset_score,
                     })
@@ -461,19 +439,14 @@ def train_gpt(
                             if hasattr(model, "module"):
                                 model = model.module
                             if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                                # 清理GPU缓存以释放内存
                                 clear_gpu_cache()
                                 try:
-                                    accelerator.print("开始合并PEFT模型...请耐心等待")
-                                    # 先转到CPU合并，减少GPU内存使用
                                     model = model.to(dtype=torch.float32)
                                     model = model.cpu()
                                     model = model.merge_and_unload()
-                                    # 合并后再转回原始精度和设备
                                     model = model.to(dtype=torch.float16)
                                     if torch.cuda.is_available():
                                         model = model.to("cuda")
-                                    accelerator.print("PEFT模型合并完成，开始保存...")
                                     save_merged_checkpoint(model, tokenizer, train_config.output_dir)
                                     accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
                                 except Exception as e:
@@ -484,7 +457,6 @@ def train_gpt(
                         else:
                             save_model_checkpoint(model, train_config.output_dir)
                             accelerator.print(f"Model is saved in {train_config.output_dir} directory")
-                    # 移除sys.exit(0)调用
     
     results = None
    
@@ -579,30 +551,24 @@ def evaluation_chat(
 
     total_num = len(all_y)
 
-    # 收集所有设备上的数据
     gathered_all_y = all_y
     gathered_eval_probs = eval_probs
 
-    # 计算平均损失和困惑度
     eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
     eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
     eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
-    # 只在主进程上计算指标并进行可视化
     if accelerator.is_main_process:
-        # 将收集到的数据转换为列表
         all_gathered_y = gathered_all_y
         all_gathered_probs = gathered_eval_probs
         
-        # 计算指标
         accelerator.print(f"====== {train_config.dataset}")
         accelerator.print(f"Number: {total_num}")
         val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
         ece_score = val_metrics['ece']
         roc_auc_score = val_metrics['auroc']
 
-        # 在主进程上记录和可视化结果
         if train_config.use_wandb:
             plot_confidence_histogram(
                 all_gathered_y, all_gathered_probs, "evaluation", 
@@ -613,11 +579,8 @@ def evaluation_chat(
                 all_gathered_y, all_gathered_probs, "evaluation", 
                 wandb_run, original, train_config.dataset
             )
-        
-        # 打印评估指标
         accelerator.print(f" {eval_ppl=} {eval_epoch_loss=}")
 
-        # 记录到wandb
         if wandb_run:
             wandb_run.log({
                 'eval/perplexity': eval_ppl,
@@ -628,196 +591,10 @@ def evaluation_chat(
                 'eval/roc_auc': roc_auc_score,
             }, commit=False)
     else:
-        # 非主进程不需要计算指标
         ece_score = 0
         roc_auc_score = 0
 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
-
-def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
-    """
-    Evaluates the model on the given dataloader
-
-    Args:
-        model: The model to evaluate
-        eval_dataloader: The dataloader containing the evaluation data
-        local_rank: The rank of the current node in a distributed setting
-        tokenizer: The tokenizer used to decode predictions
-
-    Returns: eval_ppl, eval_epoch_loss
-    """
-    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
-    
-    all_y = []
-    test_probs = []
-    test_probs_stage1 = []
-
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 200, 
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "repetition_penalty": train_config.repetition_penalty,
-        "temperature": train_config.temperature,
-        "do_sample": train_config.do_sample,
-        "pad_token_id": tokenizer.eos_token_id,
-        "output_scores": True,
-        "return_dict_in_generate": True,
-        # "pad_token_id": tokenizer.pad_token_id
-    }
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
-    with MemoryTrace() as memtrace:
-        id = 0
-        wan_table = wandb.Table(columns=['response','confidence', 'y'])
-        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
-            
-            prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
-            # stop when the maximum number of eval steps is reached
-            
-
-            with torch.no_grad():
-                output = model.generate(**query_tensors, **generation_kwargs, ) 
-                # output = model(**query_tensors, **generation_kwargs)
-                responses = output.sequences
-                batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered,_ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                if len(prompts_new) == 0:
-                    continue
-                y = torch.tensor(y).view(-1, 1).to(model.device)
-
-                # include attention mask
-                query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
-                white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
-                query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
-                logits = model(**query_tensors_new).logits
-
-                # exclude attention mask
-                # query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
-                # white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                # query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
-                # logits = model(query_tensors_new).logits
-
-            num_token = logits[:,-1,:]
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-            # num_token2 = logits2[:,-1,:]
-            # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
-            test_probs.extend(probs.detach().cpu().numpy().tolist())
-            test_probs_stage1.extend(confidence_stage1)
-            # print(probs)
-            # print(confidence_stage1)
-            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
-            for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
-                wan_table.add_data(response, confidence, y_item)        
-
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if original == True:
-            wandb_run.log({"Testing_samples/original": wan_table})
-        else:
-            wandb_run.log({"Testing_samples/fine-tuned": wan_table})
-
-    number = len(all_y)
-    print(f"Number: {number}")
-    print("Stage1:")
-    val_metrics_stage1 = compute_conf_metrics(all_y, test_probs_stage1)
-    if train_config.use_wandb:
-        plot_confidence_histogram(all_y, test_probs_stage1, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, test_probs_stage1, "stage1", wandb_run, original)
-
-    print("Stage2:")
-    val_metrics = compute_conf_metrics(all_y, test_probs)
-    if train_config.use_wandb:
-        plot_confidence_histogram(all_y, test_probs, "stage2", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, test_probs, "stage2", wandb_run,original)
-    
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
-
-    if wandb_run:
-        wandb_run.log({
-                        'test/ece_stage1': ece_score,
-                        'test/roc_auc_stage1': roc_auc_score,
-                        'test/ece_stage2': ece_score,
-                        'test/roc_auc_stage2': roc_auc_score,
-                    }, commit=False)
-
-    return ece_score, roc_auc_score
-
-def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
-    """
-    Evaluates the model on the given dataloader
-
-    Args:
-        model: The model to evaluate
-        eval_dataloader: The dataloader containing the evaluation data
-        local_rank: The rank of the current node in a distributed setting
-        tokenizer: The tokenizer used to decode predictions
-
-    Returns: eval_ppl, eval_epoch_loss
-    """
-    all_y = []
-    test_probs = []
-    test_probs_stage1 = []
-    llm = LLM(
-        model=train_config.model_name if original else train_config.output_dir,
-        tensor_parallel_size=1,
-        dtype="float16",
-        seed=42,
-        disable_log_stats=True,
-        trust_remote_code=True,
-        gpu_memory_utilization=0.95,
-        enforce_eager=True,
-    )
-    sampling_params = SamplingParams(
-                                     n=1,
-                                     temperature=train_config.temperature,
-                                    top_k= -1,
-                                    top_p=1.0,
-                                     max_tokens=400)
-
-    
-    wan_table = wandb.Table(columns=['response','confidence', 'y'])
-    prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
-    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
-    for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table.add_data(response, confidence, y_item)        
-
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if original == True:
-            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
-        else:
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
-
-    number = len(y)
-    print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
-    if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
-
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
-    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
-
-    if wandb_run:
-        wandb_run.log({
-                        f'test/number_{train_config.dataset}': number,
-                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
-                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
-                        f'test/ece_{train_config.dataset}': ece_score,
-                        f'test/auroc_{train_config.dataset}': roc_auc_score,
-                        f'test/score_{train_config.dataset}': score,
-                    }, commit=False)
-
-    return ece_score, roc_auc_score, val_metrics['acc2']
 
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
@@ -842,10 +619,6 @@ def setup_environ_flags(rank):
     """Set environment flags for debugging purposes"""
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["NCCL_ASYNC_ERROR_HANDLING"] = str(1)
-    # os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
-    # This flag will help with CUDA memory fragmentations that can lead into OOM in some cases.
-    # Note this is only availble in PyTorch Nighlies (as of July 30 2023)
-    # os.environ['PYTORCH_CUDA_ALLOC_CONF']='expandable_segments:True'
     if rank == 0:
         print(f"--> Running with torch dist debug set to detail")
 
@@ -923,13 +696,9 @@ def save_train_params(train_config, fsdp_config, rank):
     This will be used by converter script in the inference folder to fetch the HF model name or path.
     It also would be hepful as a log for future references.
     """
-    # Convert the train_config and fsdp_config objects to dictionaries,
-    # converting all values to strings to ensure they can be serialized into a YAML file
     train_config_dict = {k: str(v) for k, v in vars(train_config).items() if not k.startswith('__')}
     fsdp_config_dict = {k: str(v) for k, v in vars(fsdp_config).items() if not k.startswith('__')}
-    # Merge the two dictionaries into one
     train_params_dict = {**train_config_dict, **fsdp_config_dict}
-    # Construct the folder name (follwoing FSDP checkpointing style) using properties of the train_config object
     folder_name = (
     train_config.dist_checkpoint_root_folder
     + "/"
@@ -939,18 +708,14 @@ def save_train_params(train_config, fsdp_config, rank):
     )
 
     save_dir = Path.cwd() / folder_name
-    # If the directory does not exist, create it
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    # Convert the dictionary to a YAML string
     config_yaml = yaml.dump(train_params_dict, indent=4)
     file_name = os.path.join(save_dir,'train_params.yaml')
 
-    # Check if there's a directory with the same name as the file
     if os.path.isdir(file_name):
         print(f"Error: {file_name} is a directory, not a file.")
     else:
-        # Write the YAML string to the file
         with open(file_name, 'w') as f:
             f.write(config_yaml)
         if rank==0:

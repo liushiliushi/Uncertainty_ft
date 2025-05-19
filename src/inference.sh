@@ -1,8 +1,15 @@
 #!/bin/bash
-model_name="../../meta-llama/Qwen2.5-7B-Instruct"
 
-CUDA_VISIBLE_DEVICES=6 python inference.py --use_wandb --add_loss_con True --on_policy False --batch_size_testing 10 --test_original_model False --do_sample False --temperature 0 --use_peft --peft_method lora --model_name  ../../meta-llama/Qwen2.5-7B-Instruct --output_dir ../../meta-llama/Qwen2.5-7B-Instruct  --dataset trivia_qa --batch_size_training=8 --val_batch_size=8 --generate=llm --lr=5e-5 --loss_type=sot 
-CUDA_VISIBLE_DEVICES=6 python inference.py --use_wandb --add_loss_con True --on_policy False --batch_size_testing 10 --test_original_model False --do_sample False --temperature 0 --use_peft --peft_method lora --model_name  ../../meta-llama/Qwen2.5-7B-Instruct --output_dir ../../meta-llama/Qwen2.5-7B-Instruct  --dataset gsm8k_dataset --batch_size_training=8 --val_batch_size=8 --generate=llm --lr=5e-5 --loss_type=sot 
-CUDA_VISIBLE_DEVICES=6 python inference.py --use_wandb --add_loss_con True --on_policy False --batch_size_testing 10 --test_original_model False --do_sample False --temperature 0 --use_peft --peft_method lora --model_name  ../../meta-llama/Qwen2.5-7B-Instruct --output_dir ../../meta-llama/Qwen2.5-7B-Instruct  --dataset hotpot_qa --batch_size_training=8 --val_batch_size=8 --generate=llm --lr=5e-5 --loss_type=sot 
-CUDA_VISIBLE_DEVICES=6 python inference.py --use_wandb --add_loss_con True --on_policy False --batch_size_testing 10 --test_original_model False --do_sample False --temperature 0 --use_peft --peft_method lora --model_name  ../../meta-llama/Qwen2.5-7B-Instruct --output_dir ../../meta-llama/Qwen2.5-7B-Instruct  --dataset strategy_qa --batch_size_training=8 --val_batch_size=8 --generate=llm --lr=5e-5 --loss_type=sot 
-CUDA_VISIBLE_DEVICES=6 python inference.py --use_wandb --add_loss_con True --on_policy False --batch_size_testing 10 --test_original_model False --do_sample False --temperature 0 --use_peft --peft_method lora --model_name  ../../meta-llama/Qwen2.5-7B-Instruct --output_dir ../../meta-llama/Qwen2.5-7B-Instruct  --dataset truthful_qa --batch_size_training=8 --val_batch_size=8 --generate=llm --lr=5e-5 --loss_type=sot 
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <model_name>"
+    echo "Example: $0 Qwen/Qwen2.5-7B-Instruct"
+    exit 1
+fi
+
+model_name=$1
+
+python inference.py --use_wandb --test_original_model False --do_sample False --temperature 0 --model_name  ${model_name} --output_dir ${model_name}  --dataset trivia_qa
+python inference.py --use_wandb --test_original_model False --do_sample False --temperature 0 --model_name  ${model_name} --output_dir ${model_name}  --dataset hotpot_qa
+python inference.py --use_wandb --test_original_model False --do_sample False --temperature 0 --model_name  ${model_name} --output_dir ${model_name}  --dataset strategy_qa
+python inference.py --use_wandb --test_original_model False --do_sample False --temperature 0 --model_name  ${model_name} --output_dir ${model_name}  --dataset truthful_qa
+python inference.py --use_wandb --test_original_model False --do_sample False --temperature 0 --model_name  ${model_name} --output_dir ${model_name}  --dataset gsm8k_dataset
