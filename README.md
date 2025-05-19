@@ -2,7 +2,7 @@
 
 This repository contains code for fine-tuning language models with uncertainty estimation capabilities. It supports multiple base models including Llama-3.1, Mistral, and Qwen.
 
-## Installation
+## Setups
 
 1. Clone the repository:
 ```bash
@@ -63,9 +63,28 @@ python generate_response.py \
     --dataset hotpot_qa
 ```
 
-Note: For GPT-style training, use the following output paths:
-- Training: `../dataset/hotpot_qa/train_response_gpt.jsonl`
-- Testing: `../dataset/hotpot_qa/validation_response_gpt.jsonl`
+### Datasets for GPT-4o
+
+To generate training datasets for GPT-4o, use the following commands:
+
+```bash
+python generate_response.py --split train --output_dir ../dataset/hotpot_qa/train_response_gpt.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset hotpot_qa
+```
+
+To generate testing datasets for GPT-4o, use the following commands:
+
+```bash
+python generate_response.py --split test --output_dir ../dataset/hotpot_qa/validation_response_gpt.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset hotpot_qa
+
+python generate_response.py --split test --output_dir ../dataset/trivia_qa/validation_gpt_temp=0.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset trivia_qa
+
+python generate_response.py --split test --output_dir ../dataset/grade_school_math/data/validation_gpt_temp=0.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset gsm8k_dataset
+
+python generate_response.py --split test --output_dir ../dataset/truthful_qa/validation_gpt_temp=0.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset truthful_qa
+
+python generate_response.py --split test --output_dir ../dataset/StrategyQA/validation_gpt_temp=0.jsonl --do_sample False --temperature 0 --model_name gpt4o --dataset strategy_qa
+```
+
 
 ## Training
 
@@ -154,6 +173,37 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
     --merge_peft True
 ```
 
+Train on GPT-4o's responses:
+
+```bash
+CUDA_VISIBLE_DEVICES=1,2,3,4 accelerate launch \
+    --num_processes 4 \
+    --mixed_precision bf16 \
+    --use_deepspeed \
+    --deepspeed_config_file llama_recipes/configs/ds_config.json \
+    uncertainty_sft.py \
+    --add_loss_con False \
+    --train_gpt True \
+    --train_coarse False \
+    --on_policy False \
+    --batch_size_testing 4 \
+    --do_sample False \
+    --temperature 0 \
+    --use_peft \
+    --peft_method lora \
+    --model_name meta-llama/Llama-3.1-8B-Instruct \
+    --output_dir checkpoints/llama_gpt \
+    --dataset hotpot_qa \
+    --batch_size_training=4 \
+    --val_batch_size=4 \
+    --generate=llm \
+    --lr=1e-4 \
+    --loss_type=sot \
+    --num_epochs=2 \
+    --merge_peft False \
+    --use_wandb
+```
+
 ### Training Parameters
 
 Key parameters for fine-tuning:
@@ -177,13 +227,22 @@ python inference.py \
     --model_name /path/to/your/checkpoint \
     --dataset dataset_name \
     --use_wandb \
-    --test_original_model  # Optional: test the original model
 ```
 
 You can just run these commands to see the performance on all the datasets:
-```
+
+```bash
 cd src
 ./inference.sh /path/to/your/checkpoint
+```
+
+To evaluate the model cascading performance, run:
+
+```bash
+python inference_gpt.py \
+    --model_name /path/to/your/checkpoint \
+    --dataset hotpot_qa or truthful_qa \
+    --use_wandb \
 ```
 
 
