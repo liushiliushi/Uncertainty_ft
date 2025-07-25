@@ -53,6 +53,22 @@ class ConfidenceClassifier(nn.Module):
         # 分类器头
         self.classifier = nn.Linear(hidden_dim // 2, num_classes)
         
+        # 初始化权重
+        self.init_weights()
+    
+    def init_weights(self):
+        """初始化模型权重，防止极端值"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # 使用Xavier初始化
+                nn.init.xavier_uniform_(module.weight, gain=0.1)  # 使用较小的gain
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        
+        # 特别初始化最后的分类器层，使初始输出接近均匀分布
+        nn.init.xavier_uniform_(self.classifier.weight, gain=0.01)
+        nn.init.constant_(self.classifier.bias, 0)
+        
     def forward(self, token_logits):
         """
         Args:
@@ -239,12 +255,18 @@ def train_chat(
                     accelerator.print(f"LLM requires_grad: {next(model.parameters()).requires_grad}")
                     accelerator.print(f"Classifier requires_grad: {next(confidence_classifier.parameters()).requires_grad}")
                 
-                # 分类器训练：计算梯度
+                                # 分类器训练：计算梯度
                 with autocast():
                     # 使用分类器预测置信度
                     confidence_logits = confidence_classifier(num_token1.detach())  # 确保断开与LLM的梯度连接
                     
-                    # 将logits转换为概率分布
+                    # 检查训练时的logits异常值
+                    if total_train_steps <= 3:  # 只在前几步打印调试信息
+                        accelerator.print(f"Train step {total_train_steps} - Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}")
+                        accelerator.print(f"Train step {total_train_steps} - Has NaN in logits: {torch.isnan(confidence_logits).any()}")
+                    
+                    # 数值稳定的softmax计算
+                    confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
                     confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
                     
                     # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
@@ -253,15 +275,39 @@ def train_chat(
                     # 计算期望的置信度预测值
                     predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
                     
+                    # 检查训练时的预测置信度
+                    if total_train_steps <= 3:
+                        accelerator.print(f"Train step {total_train_steps} - Predicted confidence stats: min={predicted_confidence.min():.4f}, max={predicted_confidence.max():.4f}")
+                        accelerator.print(f"Train step {total_train_steps} - Has NaN in predicted confidence: {torch.isnan(predicted_confidence).any()}")
+                    
+                    # 处理NaN值
+                    if torch.isnan(predicted_confidence).any():
+                        accelerator.print(f"Warning at step {total_train_steps}: Found NaN in predicted confidence during training")
+                        predicted_confidence = torch.where(torch.isnan(predicted_confidence), 
+                                                         torch.tensor(0.5, device=predicted_confidence.device, dtype=predicted_confidence.dtype), 
+                                                         predicted_confidence)
+                    
                     # 计算Brier Score损失（只针对分类器）
                     squared_differences = (predicted_confidence - y.squeeze()) ** 2
                     loss_cal = torch.mean(squared_differences)
                     
-                                    # 只使用分类器损失，不使用LLM损失
-                loss = loss_cal
+                    # 检查损失是否为NaN
+                    if torch.isnan(loss_cal):
+                        accelerator.print(f"Warning at step {total_train_steps}: Loss is NaN, skipping this step")
+                        continue  # 跳过这个批次
+                    
+                    # 只使用分类器损失，不使用LLM损失
+                    loss = loss_cal
                 
                 # 只对分类器进行反向传播和参数更新
                 accelerator.backward(loss)
+                
+                # 梯度裁剪，防止梯度爆炸
+                if hasattr(confidence_classifier, "module"):
+                    torch.nn.utils.clip_grad_norm_(confidence_classifier.module.parameters(), max_norm=1.0)
+                else:
+                    torch.nn.utils.clip_grad_norm_(confidence_classifier.parameters(), max_norm=1.0)
+                
                 classifier_optimizer.step()
                 classifier_optimizer.zero_grad()
                 total_loss += loss.detach().float()
@@ -648,14 +694,38 @@ def evaluation_chat(
             # 使用分类器预测置信度
             confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
             
-            # 将logits转换为概率分布
+            # 检查logits是否有异常值
+            if step == 0:  # 只在第一步打印调试信息
+                print(f"Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}, mean={confidence_logits.mean():.4f}")
+                print(f"Has NaN in logits: {torch.isnan(confidence_logits).any()}")
+                print(f"Has Inf in logits: {torch.isinf(confidence_logits).any()}")
+            
+            # 数值稳定的softmax计算
+            confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
             confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
+            
+            # 检查概率是否有异常值
+            if step == 0:
+                print(f"Confidence probs stats: min={confidence_probs.min():.4f}, max={confidence_probs.max():.4f}, sum={confidence_probs.sum(dim=1).mean():.4f}")
+                print(f"Has NaN in probs: {torch.isnan(confidence_probs).any()}")
             
             # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
             confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)  # [1, 101]
             
             # 计算期望的置信度预测值
             predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
+            
+            # 检查预测置信度是否有异常值
+            if step == 0:
+                print(f"Predicted confidence stats: min={predicted_confidence.min():.4f}, max={predicted_confidence.max():.4f}, mean={predicted_confidence.mean():.4f}")
+                print(f"Has NaN in predicted confidence: {torch.isnan(predicted_confidence).any()}")
+            
+            # 处理NaN值：如果有NaN，替换为0.5（中性置信度）
+            if torch.isnan(predicted_confidence).any():
+                print(f"Warning: Found NaN in predicted confidence, replacing with 0.5")
+                predicted_confidence = torch.where(torch.isnan(predicted_confidence), 
+                                                 torch.tensor(0.5, device=predicted_confidence.device, dtype=predicted_confidence.dtype), 
+                                                 predicted_confidence)
             
             # 计算Brier Score损失（只针对分类器）
             squared_differences = (predicted_confidence - y.squeeze()) ** 2
@@ -1217,6 +1287,15 @@ def load_confidence_classifier(checkpoint_path, device='cuda', dtype=torch.float
     confidence_classifier.load_state_dict(checkpoint['model_state_dict'])
     confidence_classifier.to(device)
     confidence_classifier = confidence_classifier.to(dtype)
+    
+    # 检查加载的权重是否有异常值
+    for name, param in confidence_classifier.named_parameters():
+        if torch.isnan(param).any():
+            print(f"Warning: Found NaN in parameter {name}, reinitializing...")
+            nn.init.xavier_uniform_(param.data, gain=0.01)
+        if torch.isinf(param).any():
+            print(f"Warning: Found Inf in parameter {name}, reinitializing...")
+            nn.init.xavier_uniform_(param.data, gain=0.01)
     
     checkpoint_info = {
         'epoch': checkpoint.get('epoch', -1),
