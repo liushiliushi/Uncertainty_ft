@@ -172,6 +172,10 @@ def train_chat(
         weight_decay=train_config.weight_decay
     )
     
+    # 分类器学习率调度器（可选）
+    from torch.optim.lr_scheduler import StepLR
+    classifier_lr_scheduler = StepLR(classifier_optimizer, step_size=1, gamma=train_config.gamma if hasattr(train_config, 'gamma') else 1.0)
+    
     # 准备分类器参与accelerate
     confidence_classifier, classifier_optimizer = accelerator.prepare(
         confidence_classifier, classifier_optimizer
@@ -190,17 +194,25 @@ def train_chat(
     
     # Start the training loop
     for epoch in range(train_config.num_epochs):
-        for param_group in optimizer.param_groups:
-            print(f"Current learning rate: {param_group['lr']}")
+        for param_group in classifier_optimizer.param_groups:  # 只显示分类器的学习率
+            print(f"Current classifier learning rate: {param_group['lr']}")
         # stop when the maximum number of training steps is reached
         if max_steps_reached:
             break
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
-            model.train()
+            # 设置模型状态：LLM为eval模式（不训练），分类器为train模式
+            model.eval()  # LLM不训练，只用于推理
+            confidence_classifier.train()  # 只训练分类器
+            
+            # 冻结LLM参数
+            for param in model.parameters():
+                param.requires_grad = False
+            
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            
             for step, batch in enumerate(pbar): 
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
@@ -210,11 +222,12 @@ def train_chat(
 
                 y = batch.data.pop('y')
 
-                with autocast():
-                    # get the
-                    output1 = model(**batch)
-                    logits1 = output1.logits
-                    loss_con = output1.loss
+                # LLM推理：不计算梯度
+                with torch.no_grad():
+                    with autocast():
+                        output1 = model(**batch)
+                        logits1 = output1.logits
+                        loss_con = output1.loss
 
                 # 获取最后一个token的logits，用作分类器的输入特征
                 num_token1 = logits1[:,-1,:] # [batch_size, vocab_size]
@@ -223,31 +236,33 @@ def train_chat(
                 # 调试信息：检查数据类型匹配
                 if total_train_steps == 1:  # 只在第一步打印，避免刷屏
                     accelerator.print(f"Input dtype: {num_token1.dtype}, Classifier dtype: {next(confidence_classifier.parameters()).dtype}")
+                    accelerator.print(f"LLM requires_grad: {next(model.parameters()).requires_grad}")
+                    accelerator.print(f"Classifier requires_grad: {next(confidence_classifier.parameters()).requires_grad}")
                 
-                # 使用分类器预测置信度
-                confidence_logits = confidence_classifier(num_token1)  # [batch_size, 101]
+                # 分类器训练：计算梯度
+                with autocast():
+                    # 使用分类器预测置信度
+                    confidence_logits = confidence_classifier(num_token1.detach())  # 确保断开与LLM的梯度连接
+                    
+                    # 将logits转换为概率分布
+                    confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
+                    
+                    # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
+                    confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)  # [1, 101]
+                    
+                    # 计算期望的置信度预测值
+                    predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
+                    
+                    # 计算Brier Score损失（只针对分类器）
+                    squared_differences = (predicted_confidence - y.squeeze()) ** 2
+                    loss_cal = torch.mean(squared_differences)
+                    
+                                    # 只使用分类器损失，不使用LLM损失
+                loss = loss_cal
                 
-                # 将logits转换为概率分布
-                confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
-                
-                # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
-                confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)  # [1, 101]
-                
-                # 计算期望的置信度预测值
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
-                
-                # 计算Brier Score损失
-                squared_differences = (predicted_confidence - y.squeeze()) ** 2
-                loss_cal = torch.mean(squared_differences)
-                
-                if train_config.add_loss_con:
-                    loss = loss_con + loss_cal
-                else:
-                    loss = loss_cal
+                # 只对分类器进行反向传播和参数更新
                 accelerator.backward(loss)
-                optimizer.step()
                 classifier_optimizer.step()
-                optimizer.zero_grad()
                 classifier_optimizer.zero_grad()
                 total_loss += loss.detach().float()
 
@@ -256,11 +271,10 @@ def train_chat(
                             'train/epoch': epoch + 1,
                             'train/step': epoch * len(train_dataloader) + step,
                             'train/loss': loss.detach().float(),
-                            'train/loss_con': loss_con.detach().float(),
-                                'train/loss_cal': loss_cal.detach().float()
+                            'train/loss_classifier': loss_cal.detach().float()
                         })
 
-                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
+                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (classifier loss: {loss.detach().float()})")
 
                     # torch.cuda.empty_cache()
 
@@ -269,8 +283,8 @@ def train_chat(
         avg_loss = total_loss / len(train_dataloader)
         avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
 
-        # Update the learning rate as needed
-        lr_scheduler.step()
+        # Update the learning rate as needed (only for classifier)
+        classifier_lr_scheduler.step()  # 更新分类器的学习率
         if train_config.run_validation:
             eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                 model,
@@ -593,7 +607,6 @@ def evaluation_chat(
     val_step_loss = []
     val_step_perplexity = []
     eval_loss = 0.0  # Initialize evaluation loss
-    eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
     
@@ -621,11 +634,14 @@ def evaluation_chat(
     }
     with torch.no_grad():
         model.eval()
+        confidence_classifier.eval()  # 确保分类器也在eval模式
+        
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
+            
+            # LLM推理：不计算梯度
             output = model(**batch)
             logits = output.logits
-            loss_con = output.loss
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
             
@@ -641,22 +657,20 @@ def evaluation_chat(
             # 计算期望的置信度预测值
             predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
             
-            # 计算Brier Score损失
+            # 计算Brier Score损失（只针对分类器）
             squared_differences = (predicted_confidence - y.squeeze()) ** 2
             loss_cal = torch.mean(squared_differences)
+            
+            # 只使用分类器损失
+            loss = loss_cal
             
             if train_config.save_metrics:
                 val_step_loss.append(loss.detach().float().item())
                 val_step_perplexity.append(float(torch.exp(loss.detach().float())))
 
-            if train_config.add_loss_con:
-                loss = loss_con + loss_cal
-            else:
-                loss = loss_cal
-            print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
+            print(f"classifier loss: {loss_cal:.4f}") 
                
             eval_loss += loss.detach().float()
-            eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
             
             # 预测置信度：使用期望值（与训练时一致）
@@ -673,7 +687,6 @@ def evaluation_chat(
 
     # 计算平均损失和困惑度
     eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
-    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
     eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
@@ -710,8 +723,7 @@ def evaluation_chat(
             wandb_run.log({
                 'eval/perplexity': eval_ppl,
                 'eval/loss': eval_epoch_loss,
-                'eval/loss_con': eval_epoch_loss_con,
-                'eval/loss_cal': eval_epoch_loss_cal,
+                'eval/loss_classifier': eval_epoch_loss_cal,
                 'eval/ece': ece_score,
                 'eval/roc_auc': roc_auc_score,
             }, commit=False)
