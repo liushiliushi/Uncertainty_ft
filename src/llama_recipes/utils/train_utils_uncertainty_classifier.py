@@ -157,7 +157,13 @@ def train_chat(
     
     # 初始化置信度分类器
     vocab_size = len(tokenizer)
-    confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size).to(model.device)
+    confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
+    
+    # 确保分类器使用与主模型相同的数据类型
+    model_dtype = next(model.parameters()).dtype
+    confidence_classifier = confidence_classifier.to(model_dtype)
+    
+    confidence_classifier = confidence_classifier.to(model.device)
     
     # 分类器优化器
     classifier_optimizer = torch.optim.AdamW(
@@ -171,7 +177,7 @@ def train_chat(
         confidence_classifier, classifier_optimizer
     )
     
-    accelerator.print(f"Confidence Classifier initialized with vocab_size={vocab_size}")
+    accelerator.print(f"Confidence Classifier initialized with vocab_size={vocab_size}, dtype={model_dtype}")
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 80,
@@ -213,6 +219,10 @@ def train_chat(
                 # 获取最后一个token的logits，用作分类器的输入特征
                 num_token1 = logits1[:,-1,:] # [batch_size, vocab_size]
                 del logits1
+                
+                # 调试信息：检查数据类型匹配
+                if total_train_steps == 1:  # 只在第一步打印，避免刷屏
+                    accelerator.print(f"Input dtype: {num_token1.dtype}, Classifier dtype: {next(confidence_classifier.parameters()).dtype}")
                 
                 # 使用分类器预测置信度
                 confidence_logits = confidence_classifier(num_token1)  # [batch_size, 101]
@@ -290,6 +300,7 @@ def train_chat(
                         'optimizer_state_dict': classifier_optimizer.state_dict() if hasattr(classifier_optimizer, 'state_dict') else None,
                         'vocab_size': len(tokenizer),
                         'epoch': epoch,
+                        'dtype': model_dtype,
                     }, classifier_path)
                     accelerator.print(f"Confidence classifier saved to {classifier_path}")
 
@@ -589,7 +600,13 @@ def evaluation_chat(
     # 如果没有提供分类器，创建一个默认的分类器用于评估
     if confidence_classifier is None:
         vocab_size = len(tokenizer)
-        confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size).to(model.device)
+        confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
+        
+        # 确保分类器使用与主模型相同的数据类型
+        model_dtype = next(model.parameters()).dtype
+        confidence_classifier = confidence_classifier.to(model_dtype)
+        
+        confidence_classifier = confidence_classifier.to(model.device)
         accelerator.print("Warning: Using default classifier for evaluation")
     generation_kwargs = {
         "min_length": 1,
@@ -842,10 +859,6 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
     # 加载分类器（如果提供路径）
     confidence_classifier = None
     if classifier_path and os.path.exists(classifier_path):
-        confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda')
-        confidence_classifier.eval()
-        print(f"Loaded confidence classifier from {classifier_path}")
-        
         # 加载模型用于获取logits
         model = AutoModelForCausalLM.from_pretrained(
             train_config.model_name if original else train_config.output_dir,
@@ -854,6 +867,12 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
             trust_remote_code=True,
         )
         model.eval()
+        
+        # 获取模型的数据类型
+        model_dtype = next(model.parameters()).dtype
+        confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=model_dtype)
+        confidence_classifier.eval()
+        print(f"Loaded confidence classifier from {classifier_path}")
         print("Using classifier for confidence prediction")
     else:
         print("No classifier provided, using original confidence extraction method")
@@ -1166,13 +1185,14 @@ def save_to_json(output_filename, train_step_loss, train_epoch_loss, train_step_
     with open(output_filename, "w") as f:
         json.dump(metrics_data, f)
 
-def load_confidence_classifier(checkpoint_path, device='cuda'):
+def load_confidence_classifier(checkpoint_path, device='cuda', dtype=torch.float16):
     """
     加载保存的置信度分类器
     
     Args:
         checkpoint_path: 分类器检查点路径
         device: 设备类型
+        dtype: 数据类型，默认为float16
     
     Returns:
         confidence_classifier: 加载的分类器模型
@@ -1184,6 +1204,7 @@ def load_confidence_classifier(checkpoint_path, device='cuda'):
     confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
     confidence_classifier.load_state_dict(checkpoint['model_state_dict'])
     confidence_classifier.to(device)
+    confidence_classifier = confidence_classifier.to(dtype)
     
     checkpoint_info = {
         'epoch': checkpoint.get('epoch', -1),
@@ -1193,5 +1214,7 @@ def load_confidence_classifier(checkpoint_path, device='cuda'):
     print(f"Loaded confidence classifier from {checkpoint_path}")
     print(f"  - Vocab size: {vocab_size}")
     print(f"  - Epoch: {checkpoint_info['epoch']}")
+    print(f"  - Device: {device}")
+    print(f"  - Dtype: {dtype}")
     
     return confidence_classifier, checkpoint_info
