@@ -299,7 +299,7 @@ def train_chat(
                     accelerator.print(f"Classifier requires_grad: {next(confidence_classifier.parameters()).requires_grad}")
                     accelerator.print(f"Input token logits stats: min={num_token1.min():.4f}, max={num_token1.max():.4f}, mean={num_token1.mean():.4f}")
                     accelerator.print(f"Input has NaN: {torch.isnan(num_token1).any()}, Input has Inf: {torch.isinf(num_token1).any()}")
-                    accelerator.print(f"Y values stats: min={y.min():.4f}, max={y.max():.4f}, mean={y.mean():.4f}")
+                    accelerator.print(f"Y values stats: min={y.min():.4f}, max={y.max():.4f}, mean={y.float().mean():.4f}")
                     accelerator.print(f"Y has NaN: {torch.isnan(y).any()}")
                     
                     # 检查分类器权重
@@ -330,7 +330,7 @@ def train_chat(
                 scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
                 squared_differences = (y_expanded - scores) ** 2
                 loss_cal = torch.mean(torch.sum(confidence_probs * squared_differences, dim=1))
-                    
+                if True:
                     # 检查损失是否为NaN或Inf
                     if torch.isnan(loss_cal) or torch.isinf(loss_cal):
                         accelerator.print(f"Warning at step {total_train_steps}: Loss is NaN/Inf ({loss_cal.item()}), skipping this step")
