@@ -137,7 +137,7 @@ def main(**kwargs):
     
     if model_files_exist:
         print("==============finetuned test (traditional method)================")
-        test_ece, test_auroc, test_acc2 = test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=False)
+        test_ece, test_auroc, test_acc2 = test_classifier(train_config, dataset_test, tokenizer, wandb_run, original=False)
     else:
         print(f"Finetuned model not found in {train_config.output_dir}. Skipping finetuned model test.")
         print("Expected files: adapter_config.json, config.json, pytorch_model.bin, model.safetensors, etc.")
@@ -145,7 +145,7 @@ def main(**kwargs):
     # 使用分类器进行测试
     if os.path.exists(classifier_path):
         print("==============finetuned test (with classifier)================")
-        classifier_ece, classifier_auroc, classifier_acc2 = test_vllm(
+        classifier_ece, classifier_auroc, classifier_acc2 = test_classifier(
             train_config, dataset_test, tokenizer, wandb_run, 
             original=False, classifier_path=classifier_path
         )
