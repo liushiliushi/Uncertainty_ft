@@ -58,17 +58,23 @@ class ConfidenceClassifier(nn.Module):
     
     def init_weights(self):
         """初始化模型权重，防止极端值"""
-        # 初始化特征提取层
+        # 初始化特征提取层 - 考虑输入维度很大，使用更小的标准差
         for i, module in enumerate(self.feature_extractor):
             if isinstance(module, nn.Linear):
-                # 使用正态分布初始化，标准差较小
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                # 使用Xavier初始化的思想：std = sqrt(2 / (fan_in + fan_out))
+                fan_in = module.weight.size(1)
+                fan_out = module.weight.size(0)
+                std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.1  # 再乘以0.1使其更小
+                nn.init.normal_(module.weight, mean=0.0, std=std)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         
         # 特别初始化最后的分类器层
         # 使其初始输出接近均匀分布（每个类别的logit接近0）
-        nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
+        fan_in = self.classifier.weight.size(1)
+        fan_out = self.classifier.weight.size(0)
+        std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.01  # 更小的标准差
+        nn.init.normal_(self.classifier.weight, mean=0.0, std=std)
         nn.init.constant_(self.classifier.bias, 0)
         
     def forward(self, token_logits):
@@ -197,24 +203,31 @@ def train_chat(
     vocab_size = len(tokenizer)
     confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
     
-    # 确保分类器使用与主模型相同的数据类型
+    # 为了数值稳定性，分类器使用float32，而不是float16
     model_dtype = next(model.parameters()).dtype
-    confidence_classifier = confidence_classifier.to(model_dtype)
+    classifier_dtype = torch.float32  # 强制使用float32以获得更好的数值稳定性
+    confidence_classifier = confidence_classifier.to(classifier_dtype)
     
     confidence_classifier = confidence_classifier.to(model.device)
     
-    # 分类器优化器 - 使用更小的学习率
-    classifier_lr = train_config.lr * 0.1  # 分类器学习率为主模型的1/10
+    accelerator.print(f"Model dtype: {model_dtype}, Classifier dtype: {classifier_dtype}")
+    
+    # 分类器优化器 - 使用适中的学习率
+    # 如果主模型学习率太小，给分类器设置一个最小学习率
+    min_classifier_lr = 1e-5  # 分类器最小学习率
+    classifier_lr = max(train_config.lr * 0.5, min_classifier_lr)  # 分类器学习率为主模型的一半，但不小于最小值
+    
     classifier_optimizer = torch.optim.AdamW(
         confidence_classifier.parameters(), 
         lr=classifier_lr, 
-        weight_decay=train_config.weight_decay,
+        weight_decay=train_config.weight_decay * 0.1,  # 降低权重衰减
         eps=1e-8,  # 增加数值稳定性
         betas=(0.9, 0.999)
     )
     
     accelerator.print(f"Classifier learning rate: {classifier_lr}")
     accelerator.print(f"Main model learning rate: {train_config.lr}")
+    accelerator.print(f"Classifier weight decay: {train_config.weight_decay * 0.1}")
     
     # 分类器学习率调度器（可选）
     from torch.optim.lr_scheduler import StepLR
@@ -295,34 +308,46 @@ def train_chat(
                             accelerator.print(f"Classifier layer {name}: min={param.min():.4f}, max={param.max():.4f}, mean={param.mean():.4f}")
                             accelerator.print(f"Classifier layer {name} has NaN: {torch.isnan(param).any()}")
                 
-                                # 分类器训练：计算梯度
-                with autocast():
-                    # 使用分类器预测置信度
-                    confidence_logits = confidence_classifier(num_token1.detach())  # 确保断开与LLM的梯度连接
+                # 分类器训练：计算梯度（不使用autocast，因为分类器是float32）
+                # 将输入转换为float32以匹配分类器
+                num_token1_float32 = num_token1.detach().float()  # 转换为float32并断开梯度
+                y_float32 = y.float()  # 转换标签为float32
+                
+                # 使用分类器预测置信度
+                confidence_logits = confidence_classifier(num_token1_float32)
                     
-                    # 检查训练时的logits异常值
-                    if total_train_steps <= 3:  # 只在前几步打印调试信息
-                        accelerator.print(f"Train step {total_train_steps} - Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}")
-                        accelerator.print(f"Train step {total_train_steps} - Has NaN in logits: {torch.isnan(confidence_logits).any()}")
+                # 检查训练时的logits异常值
+                if total_train_steps <= 3:  # 只在前几步打印调试信息
+                    accelerator.print(f"Train step {total_train_steps} - Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}")
+                    accelerator.print(f"Train step {total_train_steps} - Has NaN in logits: {torch.isnan(confidence_logits).any()}")
+                
+                # 数值稳定的softmax计算
+                confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
+                confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
+                
+                # 计算Brier Score损失（只针对分类器）- 全部使用float32
+                y_expanded = y_float32.expand(y_float32.shape[0], 101)  # 使用float32版本的y
+                scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
+                squared_differences = (y_expanded - scores) ** 2
+                loss_cal = torch.mean(torch.sum(confidence_probs * squared_differences, dim=1))
                     
-                    # 数值稳定的softmax计算
-                    confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
-                    confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
-                                        
-                    
-                    # 计算Brier Score损失（只针对分类器）
-                    y_expanded = y.expand(y.shape[0], 101)
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
-                    squared_differences = (y_expanded - scores) ** 2
-                    loss_cal = torch.mean(torch.sum(confidence_probs  * squared_differences, dim=1))
-                    
-                    # 检查损失是否为NaN
-                    if torch.isnan(loss_cal):
-                        accelerator.print(f"Warning at step {total_train_steps}: Loss is NaN, skipping this step")
+                    # 检查损失是否为NaN或Inf
+                    if torch.isnan(loss_cal) or torch.isinf(loss_cal):
+                        accelerator.print(f"Warning at step {total_train_steps}: Loss is NaN/Inf ({loss_cal.item()}), skipping this step")
                         continue  # 跳过这个批次
+                    
+                    # 限制损失范围，防止极端值
+                    if loss_cal > 100:
+                        accelerator.print(f"Warning at step {total_train_steps}: Loss is very large ({loss_cal.item()}), clipping to 100")
+                        loss_cal = torch.clamp(loss_cal, max=100)
                     
                     # 只使用分类器损失，不使用LLM损失
                     loss = loss_cal
+                    
+                    # 再次检查最终损失
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        accelerator.print(f"Warning at step {total_train_steps}: Final loss is NaN/Inf, skipping this step")
+                        continue
                 
                 # 只对分类器进行反向传播和参数更新
                 accelerator.backward(loss)
@@ -355,25 +380,23 @@ def train_chat(
                 # 检查权重更新后是否有NaN，如果有则重新初始化
                 nan_detected = False
                 for name, param in confidence_classifier.named_parameters():
-                    if torch.isnan(param).any():
-                        accelerator.print(f"Error: NaN detected in {name} after optimizer step, reinitializing...")
+                    if torch.isnan(param).any() or torch.isinf(param).any():
+                        accelerator.print(f"Error: NaN/Inf detected in {name} after optimizer step, reinitializing...")
                         nan_detected = True
-                        if 'weight' in name:
-                            nn.init.normal_(param.data, mean=0.0, std=0.01)
-                        elif 'bias' in name:
-                            nn.init.constant_(param.data, 0)
-                    if torch.isinf(param).any():
-                        accelerator.print(f"Error: Inf detected in {name} after optimizer step, reinitializing...")
-                        nan_detected = True
-                        if 'weight' in name:
-                            nn.init.normal_(param.data, mean=0.0, std=0.01)
-                        elif 'bias' in name:
-                            nn.init.constant_(param.data, 0)
+                        
+                        # 直接修改参数的data，而不是重新创建参数对象
+                        with torch.no_grad():
+                            if 'weight' in name:
+                                param.data.normal_(mean=0.0, std=0.01)
+                            elif 'bias' in name:
+                                param.data.fill_(0.0)
+                        
+                        # 清除该参数在优化器中的状态
+                        if param in classifier_optimizer.state:
+                            del classifier_optimizer.state[param]
                 
                 if nan_detected:
-                    # 重置优化器状态
-                    classifier_optimizer.state = {}
-                    accelerator.print("Optimizer state reset due to NaN/Inf detection")
+                    accelerator.print("Parameters reinitialized and optimizer state cleaned due to NaN/Inf detection")
                 
                 classifier_optimizer.zero_grad()
                 total_loss += loss.detach().float()
@@ -426,7 +449,8 @@ def train_chat(
                         'optimizer_state_dict': classifier_optimizer.state_dict() if hasattr(classifier_optimizer, 'state_dict') else None,
                         'vocab_size': len(tokenizer),
                         'epoch': epoch,
-                        'dtype': model_dtype,
+                        'model_dtype': model_dtype,  # 主模型的数据类型
+                        'classifier_dtype': classifier_dtype,  # 分类器的数据类型
                     }, classifier_path)
                     accelerator.print(f"Confidence classifier saved to {classifier_path}")
 
@@ -727,12 +751,14 @@ def evaluation_chat(
         vocab_size = len(tokenizer)
         confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
         
-        # 确保分类器使用与主模型相同的数据类型
+        # 为了数值稳定性，分类器使用float32
         model_dtype = next(model.parameters()).dtype
-        confidence_classifier = confidence_classifier.to(model_dtype)
+        classifier_dtype = torch.float32
+        confidence_classifier = confidence_classifier.to(classifier_dtype)
         
         confidence_classifier = confidence_classifier.to(model.device)
         accelerator.print("Warning: Using default classifier for evaluation")
+        accelerator.print(f"Model dtype: {model_dtype}, Classifier dtype: {classifier_dtype}")
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 100,
@@ -757,8 +783,12 @@ def evaluation_chat(
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
             
+            # 将输入转换为float32以匹配分类器
+            num_token_float32 = num_token.float()  # 转换为float32
+            y_float32 = y.float()  # 转换标签为float32
+            
             # 使用分类器预测置信度
-            confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
+            confidence_logits = confidence_classifier(num_token_float32)  # [batch_size, 101]
             
             # 检查logits是否有异常值
             if step == 0:  # 只在第一步打印调试信息
@@ -775,8 +805,8 @@ def evaluation_chat(
                 print(f"Confidence probs stats: min={confidence_probs.min():.4f}, max={confidence_probs.max():.4f}, sum={confidence_probs.sum(dim=1).mean():.4f}")
                 print(f"Has NaN in probs: {torch.isnan(confidence_probs).any()}")
             
-            # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
-            confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)  # [1, 101]
+            # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00] - 使用float32
+            confidence_values = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).to(model.device)  # [1, 101]
             
             # 计算期望的置信度预测值
             predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
@@ -793,8 +823,8 @@ def evaluation_chat(
                                                  torch.tensor(0.5, device=predicted_confidence.device, dtype=predicted_confidence.dtype), 
                                                  predicted_confidence)
             
-            # 计算Brier Score损失（只针对分类器）
-            squared_differences = (predicted_confidence - y.squeeze()) ** 2
+            # 计算Brier Score损失（只针对分类器）- 使用float32
+            squared_differences = (predicted_confidence - y_float32.squeeze()) ** 2
             loss_cal = torch.mean(squared_differences)
             
             # 只使用分类器损失
@@ -1333,14 +1363,14 @@ def save_to_json(output_filename, train_step_loss, train_epoch_loss, train_step_
     with open(output_filename, "w") as f:
         json.dump(metrics_data, f)
 
-def load_confidence_classifier(checkpoint_path, device='cuda', dtype=torch.float16):
+def load_confidence_classifier(checkpoint_path, device='cuda', dtype=None):
     """
     加载保存的置信度分类器
     
     Args:
         checkpoint_path: 分类器检查点路径
         device: 设备类型
-        dtype: 数据类型，默认为float16
+        dtype: 数据类型，如果为None则使用保存时的类型
     
     Returns:
         confidence_classifier: 加载的分类器模型
@@ -1352,26 +1382,38 @@ def load_confidence_classifier(checkpoint_path, device='cuda', dtype=torch.float
     confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
     confidence_classifier.load_state_dict(checkpoint['model_state_dict'])
     confidence_classifier.to(device)
+    
+    # 使用保存时的数据类型，如果没有指定的话
+    if dtype is None:
+        dtype = checkpoint.get('classifier_dtype', torch.float32)  # 默认为float32
+    
     confidence_classifier = confidence_classifier.to(dtype)
     
-    # 检查加载的权重是否有异常值
+    # 检查加载的权重是否有异常值并重新初始化
     for name, param in confidence_classifier.named_parameters():
-        if torch.isnan(param).any():
-            print(f"Warning: Found NaN in parameter {name}, reinitializing...")
-            nn.init.xavier_uniform_(param.data, gain=0.01)
-        if torch.isinf(param).any():
-            print(f"Warning: Found Inf in parameter {name}, reinitializing...")
-            nn.init.xavier_uniform_(param.data, gain=0.01)
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"Warning: Found NaN/Inf in parameter {name}, reinitializing...")
+            with torch.no_grad():
+                if 'weight' in name:
+                    fan_in = param.size(1) if param.dim() > 1 else param.size(0)
+                    fan_out = param.size(0)
+                    std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.01
+                    param.data.normal_(mean=0.0, std=std)
+                elif 'bias' in name:
+                    param.data.fill_(0.0)
     
     checkpoint_info = {
         'epoch': checkpoint.get('epoch', -1),
-        'vocab_size': vocab_size
+        'vocab_size': vocab_size,
+        'model_dtype': checkpoint.get('model_dtype', torch.float16),
+        'classifier_dtype': checkpoint.get('classifier_dtype', torch.float32)
     }
     
     print(f"Loaded confidence classifier from {checkpoint_path}")
     print(f"  - Vocab size: {vocab_size}")
     print(f"  - Epoch: {checkpoint_info['epoch']}")
     print(f"  - Device: {device}")
-    print(f"  - Dtype: {dtype}")
+    print(f"  - Classifier dtype: {dtype}")
+    print(f"  - Model dtype: {checkpoint_info['model_dtype']}")
     
     return confidence_classifier, checkpoint_info
