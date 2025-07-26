@@ -50,6 +50,23 @@ Explanation: <one-sentence explanation>
 Score: <score from 1 to 10>
 '''
 
+CONFIDENCE_PROMPT = '''You need to evaluate the confidence level of the following LLM response to a question. Please evaluate how confident the model should be about this answer on a scale of 0 to 100, where 0 means completely uncertain and 100 means completely certain.
+
+Consider factors such as:
+- How definitive and clear the answer is
+- Whether the answer shows uncertainty or hesitation
+- The complexity of the question
+- How well-supported the reasoning appears
+
+Question:
+<QUESTION>
+LLM Response:
+<RESPONSE>
+
+Your response should use the following format:
+Confidence: <score from 0 to 100>
+'''
+
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
 
@@ -164,6 +181,63 @@ class GPTAnswerScoring():
                 time.sleep(5)
                 try_time += 1
         return "", 0
+
+class GPTConfidenceScoring():
+    def __init__(self, prompt=CONFIDENCE_PROMPT, try_times=3):
+        self.prompt = CONFIDENCE_PROMPT
+        try:
+            self.openai = AzureOpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+                api_version=os.environ['OPENAI_API_VERSION'],
+                azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+            )
+        except:
+            self.openai = OpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+            )
+        self.try_times = try_times
+        
+    def parse_confidence_response(self, response):
+        try:
+            response = response.split('\n')
+            confidence_line = None
+            for line in response:
+                if 'confidence:' in line.lower():
+                    confidence_line = line
+                    break
+            if confidence_line:
+                confidence = confidence_line.split(':')[1].strip()
+                # Extract numeric value
+                match = re.search(r'(\d+)', confidence)
+                if match:
+                    score = int(match.group(1))
+                    return max(0, min(100, score))  # Ensure score is between 0-100
+            return 50  # Default to medium confidence if parsing fails
+        except Exception as e:
+            logging.error(e)
+            return 50
+        
+    def score_confidence(self, question, response):
+        prompt = self.prompt.replace('<QUESTION>', question).replace('<RESPONSE>', response)
+        try_time = 0
+        while try_time < self.try_times:
+            try:
+                completion = self.openai.chat.completions.create(
+                    model=os.environ['OPENAI_DEPLOYMENT_NAME'],
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that helps evaluate response confidence."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0
+                )
+                rsp = completion.choices[0].message.content
+                confidence_score = self.parse_confidence_response(rsp)
+                return confidence_score
+            except OpenAIError as e:
+                logging.error(e)
+                time.sleep(5)
+                try_time += 1
+        return 50  # Default confidence if all attempts fail
 
 if __name__ == '__main__':
     gpt_answer_scoring = GPTAnswerScoring()

@@ -2,7 +2,7 @@ import re
 import pdb 
 import string
 import json
-from llama_recipes.utils.gpt_answer_scoring import GPTAnswerScoring
+from llama_recipes.utils.gpt_answer_scoring import GPTAnswerScoring, GPTConfidenceScoring
 import math
 
 def normalize_answer(s):
@@ -135,7 +135,9 @@ def confidence_replace_implicit(prompts, answers, correct_answers, dataset_name=
             for qblock in question_blocks:
                 if (prompt_question[:-2] in qblock) or vllm == True :
                     qblock = re.sub("</s>", "", qblock)
-                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    # Use GPT to score confidence instead of regex extraction
+                    confidence_score = confidence_scorer.score_confidence(prompt_question, qblock)
+                    
                     if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
                         response_match = re.search(r'Response:\s*(.*?)(?=\n\s*Confidence:|\n\s*$|$)', qblock, re.DOTALL)
                         if response_match:
@@ -144,9 +146,9 @@ def confidence_replace_implicit(prompts, answers, correct_answers, dataset_name=
                             matches1 = re.match(r'^.*?(?=\n|$)', qblock)
                     else:
                         matches1 = re.findall("Final answer: (.*)", qblock)
-                    if matches1 and matches2 and (matches2[-1] != ''):
-                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
-                        confidences_None.append(matches2[-1])
+                    if matches1 and confidence_score is not None:
+                        out_confidences.append(f"{confidence_score}%")  # Format as percentage string
+                        confidences_None.append(f"{confidence_score}%")
                         if dataset_name == 'gsm8k_dataset':
                             correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
                         elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
