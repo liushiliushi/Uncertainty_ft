@@ -325,6 +325,33 @@ def train_chat(
                 confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
                 confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
                 
+                # 计算预测的置信度值（期望值）
+                confidence_values = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).to(model.device)
+                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
+                
+                # 输出每个batch的预测置信度和真实标签（控制输出频率）
+                should_print = (total_train_steps <= 5) or (total_train_steps % 20 == 0)  # 前5步 + 每20步输出一次
+                
+                if should_print:
+                    accelerator.print(f"\n=== Step {total_train_steps} Batch Predictions ===")
+                    # 最多显示前8个样本，避免输出过长
+                    max_samples_to_show = min(8, len(predicted_confidence))
+                    for i in range(max_samples_to_show):
+                        pred_conf = predicted_confidence[i].item()
+                        true_label = y_float32[i].item()
+                        accelerator.print(f"Sample {i+1}: Predicted={pred_conf:.4f}, True={true_label:.4f}, Diff={abs(pred_conf-true_label):.4f}")
+                    
+                    if len(predicted_confidence) > max_samples_to_show:
+                        accelerator.print(f"... and {len(predicted_confidence) - max_samples_to_show} more samples")
+                    
+                    # 计算batch统计信息
+                    batch_mae = torch.mean(torch.abs(predicted_confidence - y_float32.squeeze())).item()
+                    batch_mse = torch.mean((predicted_confidence - y_float32.squeeze()) ** 2).item()
+                    accelerator.print(f"Batch Stats: MAE={batch_mae:.4f}, MSE={batch_mse:.4f}")
+                    accelerator.print(f"Pred range: [{predicted_confidence.min():.4f}, {predicted_confidence.max():.4f}]")
+                    accelerator.print(f"True range: [{y_float32.min():.4f}, {y_float32.max():.4f}]")
+                    accelerator.print("=" * 50)
+                
                 # 计算Brier Score损失（只针对分类器）- 全部使用float32
                 y_expanded = y_float32.expand(y_float32.shape[0], 101)  # 使用float32版本的y
                 scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
