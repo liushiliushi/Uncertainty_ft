@@ -1186,7 +1186,8 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
         out_confidences = confidence_stage1
         print("Using original confidence extraction method")
     
-    # 记录到wandb表格
+    # 记录到wandb表格 - 从outputs提取文本
+    responses = [output.outputs[0].text for output in outputs]
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)
     
@@ -1309,12 +1310,9 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
     # VLLM生成回答
     outputs = llm.generate(prompts=prompts_text, sampling_params=sampling_params)
     
-    # 提取回答文本
-    responses = [output.outputs[0].text for output in outputs]
-    
-    # 处理每个回答以获取置信度标签
+    # 处理每个回答以获取置信度标签 - 直接传递 VLLM 输出对象
     responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_classifier(
-        test_dataset['question'], responses, test_dataset['correct_answer'], 
+        test_dataset['question'], outputs, test_dataset['correct_answer'], 
         dataset_name=train_config.dataset, vllm=True
     )
     
