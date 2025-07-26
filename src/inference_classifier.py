@@ -34,6 +34,7 @@ from llama_recipes.utils.dataset_utils import get_preprocessed_dataset2
 from llama_recipes.utils.train_utils_uncertainty_classifier import (
     train_chat,
     test_vllm,
+    test_classifier,
     clear_gpu_cache,
     print_model_size,
     get_policies,

@@ -1103,16 +1103,9 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
 
     wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts_text = tokenizer.apply_chat_template(
-        prompts, tokenize=False, padding="longest", 
-        truncation=True, return_tensors="pt", continue_final_message=True
-    )
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     
-    # VLLM生成回答
-    outputs = llm.generate(prompts=prompts_text, sampling_params=sampling_params)
-    
-    # 提取回答文本
-    responses = [output.outputs[0].text for output in outputs]
     
     # 处理每个回答以获取置信度标签
     responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(
@@ -1301,20 +1294,15 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
 
     wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts_text = tokenizer.apply_chat_template(
-        prompts, tokenize=False, padding="longest", 
-        truncation=True, return_tensors="pt", continue_final_message=True
-    )
-    
-    # VLLM生成回答
-    outputs = llm.generate(prompts=prompts_text, sampling_params=sampling_params)
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     
     # 提取回答文本
-    responses = [output.outputs[0].text for output in outputs]
+    # responses = [output.outputs[0].text for output in outputs]
     
     # 处理每个回答以获取置信度标签
     responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_classifier(
-        test_dataset['question'], responses, test_dataset['correct_answer'], 
+        test_dataset['question'], outputs, test_dataset['correct_answer'], 
         dataset_name=train_config.dataset, vllm=True
     )
     
