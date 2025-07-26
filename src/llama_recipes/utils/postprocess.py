@@ -118,6 +118,84 @@ def confidence_replace(prompts, answers, correct_answers, dataset_name='trivia_q
     return out_responses, out_response_cleans, questions, out_confidences2, y, y_None, confidences_None, correct_answer_cleans
 
 
+def confidence_replace_implicit(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
+    out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
+    answer_scorer = GPTAnswerScoring()
+    confidence_scorer = GPTConfidenceScoring()
+    if True:
+        id = 0
+        for prompt, answer in zip(prompts, answers):
+            if vllm:
+                answer = answer.outputs[0].text
+                prompt_question = prompt
+                question_blocks = [answer]
+            else:
+                prompt_question = re.findall("Question: (.*)", prompt[1]['content'])[0]
+                question_blocks = re.split("(Question:)", answer)
+            for qblock in question_blocks:
+                if (prompt_question[:-2] in qblock) or vllm == True :
+                    qblock = re.sub("</s>", "", qblock)
+                    matches2 = re.findall("Confidence: (.*)", qblock)
+                    if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":
+                        response_match = re.search(r'Response:\s*(.*?)(?=\n\s*Confidence:|\n\s*$|$)', qblock, re.DOTALL)
+                        if response_match:
+                            matches1 = type('obj', (object,), {'group': lambda self: response_match.group(1).strip()})()
+                        else:
+                            matches1 = re.match(r'^.*?(?=\n|$)', qblock)
+                    else:
+                        matches1 = re.findall("Final answer: (.*)", qblock)
+                    if matches1 and matches2 and (matches2[-1] != ''):
+                        out_confidences.append(matches2[-1])  # 如果有匹配，取最后一个
+                        confidences_None.append(matches2[-1])
+                        if dataset_name == 'gsm8k_dataset':
+                            correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
+                        elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
+                            correct = normalize_answer(matches1[-1]).lower().strip() in json.loads(correct_answers[id])
+                        elif dataset_name == "hotpot_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), json.loads(correct_answers[id]))
+                        elif dataset_name == "truthful_qa":
+                            correct = answer_scorer.score(prompt_question, matches1.group(), correct_answers[id])
+                        if correct:
+                            y.append(1)
+                            y_None.append(1)
+                        else:
+                            y.append(0)
+                            y_None.append(0)
+                        qblock = re.sub(r"(Confidence: )(\d+%)$", r"\1", qblock, count=1, flags=re.S)
+                        if not vllm:
+                            prompt[2]['content'] = re.search(r"(Response:.*)", qblock, re.S).group(1)
+                        if vllm:
+                            out_response_cleans.append(qblock)
+                        else:
+                            out_response_cleans.append(re.search(r"(Response:.*)", qblock, re.S).group(1))
+                        questions.append(prompt_question)
+                        correct_answer_cleans.append(json.loads(correct_answers[id]))
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+                        else:
+                            out_responses.append(prompt)
+                    else:
+                        y_None.append(None)
+                        confidences_None.append(None)
+                        if vllm:
+                            out_responses.append(f"Question: {prompt}\n Response:{qblock}")
+
+            id += 1
+    out_confidences2 = []
+    for percent_str in out_confidences:
+        # 使用正则匹配 "数字%" 格式
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            out_confidences2.append(percent)
+        else:
+            # 处理无效值（例如设为 0 或记录警告）
+            out_confidences2.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    return out_responses, out_response_cleans, questions, out_confidences2, y, y_None, confidences_None, correct_answer_cleans
+
+
+
 def confidence_replace_classifier(prompts, answers, correct_answers, dataset_name='trivia_qa', vllm=False):
     out_responses, y_None, y, out_confidences, confidences_None, out_response_cleans, questions, correct_answer_cleans = [], [], [], [], [], [], [], []
     if dataset_name == "hotpot_qa" or dataset_name == "truthful_qa":

@@ -4,7 +4,7 @@
 import torch
 
 from llama_recipes.data.concatenator import ConcatDataset
-from llama_recipes.datasets2 import DATASET_PREPROC, DATASET_RAW, DATASET_YES, DATASET_CONS, DATASET_REFLECTION, DATASET_CONFIDENCE_ANSWER, get_custom_dataset
+from llama_recipes.datasets2 import DATASET_PREPROC, DATASET_RAW, DATASET_YES, DATASET_CONS, DATASET_REFLECTION, DATASET_CONFIDENCE_ANSWER, DATASET_IMPLICIT, get_custom_dataset
 from llama_recipes.utils.config_utils import get_dataloader_kwargs
 
 
@@ -54,6 +54,13 @@ def get_dataset_confidence_answer(
     tokenizer, split, train_config
 ) -> torch.utils.data.Dataset:
     return DATASET_CONFIDENCE_ANSWER[train_config.dataset](
+            tokenizer, split, train_config, train_config.on_policy
+        )
+
+def get_dataset_implicit(
+    tokenizer, split, train_config
+) -> torch.utils.data.Dataset:
+    return DATASET_IMPLICIT[train_config.dataset](
             tokenizer, split, train_config, train_config.on_policy
         )
 

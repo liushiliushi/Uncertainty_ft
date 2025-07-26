@@ -26,7 +26,7 @@ from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt,confidence_replace_correct
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt,confidence_replace_correct, confidence_replace_implicit
 from vllm import LLM, SamplingParams
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
@@ -783,6 +783,78 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
         responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_correct(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     else:
         responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score, val_metrics['acc2']
+
+
+def test_implicit(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader
+
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=train_config.seed,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_implicit(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 

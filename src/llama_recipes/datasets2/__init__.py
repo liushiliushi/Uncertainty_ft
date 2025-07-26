@@ -6,7 +6,7 @@ from functools import partial
 from llama_recipes.datasets2.grammar_dataset.grammar_dataset import get_dataset as get_grammar_dataset
 from llama_recipes.datasets2.alpaca_dataset import InstructionDataset as get_alpaca_dataset
 from llama_recipes.datasets2.custom_dataset import get_custom_dataset
-from llama_recipes.datasets2.gsm8k_dataset import get_gsm8k_dataset2, get_gsm8k_dataset_raw, get_gsm8k_dataset_yes, get_gsm8k_dataset_confidence
+from llama_recipes.datasets2.gsm8k_dataset import get_gsm8k_dataset2, get_gsm8k_dataset_raw, get_gsm8k_dataset_yes, get_gsm8k_dataset_confidence, get_gsm8k_dataset_implicit
 from llama_recipes.datasets2.samsum_dataset import get_preprocessed_samsum as get_samsum_dataset
 from llama_recipes.datasets2.toxicchat_dataset import get_llamaguard_toxicchat_dataset as get_llamaguard_toxicchat_dataset
 from llama_recipes.datasets2.professional_law import get_professional_law
@@ -97,6 +97,21 @@ DATASET_CONFIDENCE_ANSWER = {
     "custom_dataset": get_custom_dataset,
     "llamaguard_toxicchat_dataset": get_llamaguard_toxicchat_dataset,
     "gsm8k_dataset": get_gsm8k_dataset_confidence,
+    "professional_law": get_professional_law,
+    "strategy_qa": get_strategyqa_confidence,
+    "object_cou": get_object_cou2,
+    "trivia_qa": get_trivia_qa_confidence,
+    "truthful_qa": get_truthful_qa_confidence,
+    "hotpot_qa": get_hotpot_qa_confidence,
+}
+
+DATASET_IMPLICIT = {
+    "alpaca_dataset": partial(get_alpaca_dataset),
+    "grammar_dataset": get_grammar_dataset,
+    "samsum_dataset": get_samsum_dataset,
+    "custom_dataset": get_custom_dataset,
+    "llamaguard_toxicchat_dataset": get_llamaguard_toxicchat_dataset,
+    "gsm8k_dataset": get_gsm8k_dataset_implicit,
     "professional_law": get_professional_law,
     "strategy_qa": get_strategyqa_confidence,
     "object_cou": get_object_cou2,
