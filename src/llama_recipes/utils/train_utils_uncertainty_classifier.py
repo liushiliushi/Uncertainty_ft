@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime
 import contextlib
+import re
 # from vllm import LLM
 # from vllm.lora.request import LoRARequest
 import torch
@@ -1235,7 +1236,7 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
 
 def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=False, classifier_path=None):
     """
-    Evaluates the model using VLLM and classifier for confidence prediction
+    Evaluates the model using classifier for confidence prediction (not LLM-generated confidence)
 
     Args:
         train_config: training configuration
@@ -1248,33 +1249,29 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
     Returns: ece_score, roc_auc_score, acc2_score
     """
     from transformers import AutoModelForCausalLM
+    import re
     
-    all_y = []
-    test_probs = []
-    all_responses = []
+    # 如果没有分类器，回退到传统方法
+    if not classifier_path or not os.path.exists(classifier_path):
+        print("No classifier provided, falling back to traditional method")
+        return test_vllm(train_config, test_dataset, tokenizer, wandb_run, original)
     
-    # 加载分类器（如果提供路径）
-    confidence_classifier = None
-    if classifier_path and os.path.exists(classifier_path):
-        # 加载模型用于获取logits
-        model = AutoModelForCausalLM.from_pretrained(
-            train_config.model_name if original else train_config.output_dir,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        model.eval()
-        
-        # 获取模型的数据类型
-        model_dtype = next(model.parameters()).dtype
-        confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=model_dtype)
-        confidence_classifier.eval()
-        print(f"Loaded confidence classifier from {classifier_path}")
-        print("Using classifier for confidence prediction")
-    else:
-        print("No classifier provided, using original confidence extraction method")
+    # 加载模型用于获取logits
+    model = AutoModelForCausalLM.from_pretrained(
+        train_config.model_name if original else train_config.output_dir,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model.eval()
     
-    # 使用VLLM生成回答
+    # 加载分类器
+    confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=torch.float32)
+    confidence_classifier.eval()
+    print(f"Loaded confidence classifier from {classifier_path}")
+    print("Using classifier for confidence prediction")
+    
+    # 使用VLLM生成回答（不包含置信度问题）
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
@@ -1282,7 +1279,7 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         seed=42,
         disable_log_stats=True,
         trust_remote_code=True,
-        gpu_memory_utilization=0.85,  # 降低一点以留出内存给分类器
+        gpu_memory_utilization=0.85,
         enforce_eager=True,
     )
     sampling_params = SamplingParams(
@@ -1293,140 +1290,183 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         max_tokens=400
     )
 
-    wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
+    # 准备简单的prompts（不包含置信度问题）
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
-    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     
-    # 提取回答文本
-    # responses = [output.outputs[0].text for output in outputs]
+    # 构建简化的prompts，只要求回答问题
+    clean_prompts = []
+    for prompt in prompts:
+        # 提取问题内容，移除置信度相关的指令
+        user_content = prompt[1]["content"]
+        # 移除置信度相关的指令
+        question_only = re.sub(r"(?:Please.*confidence.*\.|Confidence.*\.|How confident.*\?)", "", user_content, flags=re.IGNORECASE | re.DOTALL)
+        question_only = re.sub(r"\s+", " ", question_only).strip()
+        
+        clean_prompt = [
+            {"role": "user", "content": question_only},
+            {"role": "assistant", "content": "Final answer: "}
+        ]
+        clean_prompts.append(clean_prompt)
     
-    # 处理每个回答以获取置信度标签
-    responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_classifier(
-        test_dataset['question'], outputs, test_dataset['correct_answer'], 
-        test_dataset['question'], outputs, test_dataset['correct_answer'], 
-        dataset_name=train_config.dataset, vllm=True
+    prompts_text = tokenizer.apply_chat_template(
+        clean_prompts, tokenize=False, padding="longest", 
+        truncation=True, return_tensors="pt", continue_final_message=True
     )
     
-    if confidence_classifier is not None and len(responses_filtered) > 0:
-        print("Using classifier to predict confidence...")
-        
-        # 为带有置信度问题的回答重新获取logits
-        batch_size = 8
-        classifier_confidences = []
-        
-        with torch.no_grad():
-            for i in tqdm(range(0, len(responses_filtered), batch_size), desc="Classifier inference"):
-                batch_end = min(i + batch_size, len(responses_filtered))
-                batch_prompts = responses_filtered[i:batch_end]
-                
-                # 构建带有置信度问题的prompts
-                confidence_prompts = []
-                for j, response in enumerate(batch_prompts):
-                    # 获取对应的问题和回答
-                    question = questions[i+j] if i+j < len(questions) else ""
-                    
-                    # 构建置信度问题的prompt
-                    confidence_prompt = [
-                        {"role": "user", "content": question},
-                        {"role": "assistant", "content": f"{response}\n\nHow confident are you in this answer? Please provide a confidence level from 0 to 100: "}
-                    ]
-                    confidence_prompts.append(confidence_prompt)
-                
-                # Tokenize
-                query_tensors = tokenizer.apply_chat_template(
-                    confidence_prompts,
-                    tokenize=True,
-                    padding="longest",
-                    padding_side='left',
-                    truncation=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    continue_final_message=True
-                ).to(model.device)
-                
-                # 添加空格token
-                white_spaces = torch.full((len(confidence_prompts), 1), 220).to(model.device)
-                white_attention = torch.full((len(confidence_prompts), 1), 1).to(model.device)
-                query_tensors['input_ids'] = torch.cat([query_tensors['input_ids'], white_spaces], dim=1)
-                query_tensors['attention_mask'] = torch.cat([query_tensors['attention_mask'], white_attention], dim=1)
-                
-                # 获取logits
-                logits = model(**query_tensors).logits
-                
-                # 使用分类器预测置信度
-                num_token = logits[:, -1, :]  # [batch_size, vocab_size]
-                confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
-                
-                # 计算期望置信度
-                confidence_probs = F.softmax(confidence_logits, dim=1)
-                confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
-                
-                classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
-        
-        # 使用分类器的置信度预测
-        out_confidences = classifier_confidences
-        print(f"Generated {len(out_confidences)} confidence predictions using classifier")
-        
-    else:
-        # 使用原始的置信度提取方法
-        out_confidences = confidence_stage1
-        print("Using original confidence extraction method")
+    # VLLM生成回答
+    print("Generating responses...")
+    outputs = llm.generate(prompts=prompts_text, sampling_params=sampling_params)
     
-    # 记录到wandb表格
-    for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table.add_data(response, confidence, y_item)
+    # 提取回答并判断正确性
+    responses = [output.outputs[0].text for output in outputs]
+    y = []
+    cleaned_responses = []
+    valid_indices = []
+    questions = []
     
-    if wandb_run:
-        if original:
-            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
-        else:
-            classifier_suffix = "_classifier" if confidence_classifier is not None else ""
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned{classifier_suffix}": wan_table})
-
-    # 计算指标
+    print("Processing responses and checking correctness...")
+    for i, (response, correct_answer) in enumerate(zip(responses, test_dataset['correct_answer'])):
+        # 提取最终答案
+        final_answer_match = re.findall(r"Final answer:\s*(.*?)(?:\n|$)", response, re.IGNORECASE)
+        if final_answer_match:
+            final_answer = final_answer_match[0].strip()
+            cleaned_responses.append(final_answer)
+            
+            # 判断答案是否正确
+            if train_config.dataset == 'gsm8k_dataset':
+                from llama_recipes.utils.postprocess import extract_number
+                try:
+                    correct = extract_number(final_answer) == json.loads(correct_answer)
+                except:
+                    correct = False
+            elif train_config.dataset in ["trivia_qa", "strategy_qa"]:
+                from llama_recipes.utils.postprocess import normalize_answer
+                try:
+                    correct = normalize_answer(final_answer).lower().strip() in json.loads(correct_answer)
+                except:
+                    correct = False
+            else:
+                # 对于其他数据集，简单的字符串匹配
+                try:
+                    correct = final_answer.lower().strip() in json.loads(correct_answer).lower()
+                except:
+                    correct = False
+            
+            y.append(1 if correct else 0)
+            valid_indices.append(i)
+            
+            # 提取原始问题
+            original_prompt = prompts[i]
+            user_content = original_prompt[1]["content"]
+            question_only = re.sub(r"(?:Please.*confidence.*\.|Confidence.*\.|How confident.*\?)", "", user_content, flags=re.IGNORECASE | re.DOTALL)
+            question_only = re.sub(r"\s+", " ", question_only).strip()
+            questions.append(question_only)
+    
     if len(y) == 0:
         print("No valid samples for evaluation")
         return None, None, None
     
+    print(f"Using classifier to predict confidence for {len(y)} valid samples...")
+    
+    # 使用分类器预测置信度
+    classifier_confidences = []
+    batch_size = 8
+    
+    with torch.no_grad():
+        for i in tqdm(range(0, len(valid_indices), batch_size), desc="Classifier inference"):
+            batch_end = min(i + batch_size, len(valid_indices))
+            batch_responses = cleaned_responses[i:batch_end]
+            batch_questions = questions[i:batch_end]
+            
+            # 构建用于获取logits的prompts
+            inference_prompts = []
+            for response, question in zip(batch_responses, batch_questions):
+                inference_prompt = [
+                    {"role": "user", "content": question},
+                    {"role": "assistant", "content": f"Final answer: {response}"}
+                ]
+                inference_prompts.append(inference_prompt)
+            
+            # Tokenize
+            query_tensors = tokenizer.apply_chat_template(
+                inference_prompts,
+                tokenize=True,
+                padding="longest",
+                padding_side='left',
+                truncation=True,
+                return_dict=True,
+                return_tensors="pt",
+                continue_final_message=True
+            ).to(model.device)
+            
+            # 获取logits
+            logits = model(**query_tensors).logits
+            
+            # 使用分类器预测置信度
+            num_token = logits[:, -1, :].float()  # [batch_size, vocab_size] 转换为float32
+            confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
+            
+            # 计算期望置信度
+            confidence_probs = F.softmax(confidence_logits, dim=1)
+            confidence_values = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).to(model.device)
+            predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
+            
+            classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
+    
+    # 准备数据用于记录和评估
+    wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
+    
+    # 为所有样本创建完整的数组（包括无效样本）
+    y_all = [None] * len(responses)
+    confidences_all = [None] * len(responses)
+    
+    for i, idx in enumerate(valid_indices):
+        y_all[idx] = y[i]
+        confidences_all[idx] = classifier_confidences[i]
+    
+    # 记录到wandb表格
+    for response, confidence, y_item in zip(responses, confidences_all, y_all):
+        wan_table.add_data(response, confidence, y_item)
+    
+    if wandb_run:
+        suffix = "_classifier"
+        wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned{suffix}": wan_table})
+
+    # 计算指标（只使用有效样本）
     number = len(y)
-    print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    print(f"Valid samples: {number}")
+    val_metrics = compute_conf_metrics(y, classifier_confidences, len(prompts))
     
     if train_config.use_wandb:
-        method_name = "classifier" if confidence_classifier is not None else "stage1"
         plot_confidence_histogram(
-            y, out_confidences, method_name, 
+            y, classifier_confidences, "classifier", 
             val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], 
             wandb_run, original, train_config.dataset, use_annotation=True
         )
-        plot_ece_diagram(y, out_confidences, method_name, wandb_run, original, train_config.dataset)
+        plot_ece_diagram(y, classifier_confidences, "classifier", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
     acc2_score = val_metrics['acc2']
     score = 3 * acc2_score + 2 * roc_auc_score - ece_score
     
-    print(f"Results ({'Classifier' if confidence_classifier else 'Original'}):")
+    print(f"Results (Classifier):")
     print(f"  ECE: {ece_score:.4f}")
     print(f"  ROC-AUC: {roc_auc_score:.4f}")
     print(f"  Accuracy: {acc2_score:.4f}")
     print(f"  Score: {score:.4f}")
 
     if wandb_run:
-        method_suffix = "_classifier" if confidence_classifier is not None else ""
         wandb_run.log({
-            f'test/number_{train_config.dataset}{method_suffix}': number,
-            f'test/acc_{train_config.dataset}{method_suffix}': val_metrics['acc'],
-            f'test/acc2_{train_config.dataset}{method_suffix}': acc2_score,
-            f'test/ece_{train_config.dataset}{method_suffix}': ece_score,
-            f'test/auroc_{train_config.dataset}{method_suffix}': roc_auc_score,
-            f'test/score_{train_config.dataset}{method_suffix}': score,
+            f'test/number_{train_config.dataset}_classifier': number,
+            f'test/acc_{train_config.dataset}_classifier': val_metrics['acc'],
+            f'test/acc2_{train_config.dataset}_classifier': acc2_score,
+            f'test/ece_{train_config.dataset}_classifier': ece_score,
+            f'test/auroc_{train_config.dataset}_classifier': roc_auc_score,
+            f'test/score_{train_config.dataset}_classifier': score,
         }, commit=False)
 
     return ece_score, roc_auc_score, acc2_score
-
 
 def freeze_transformer_layers(model, num_layer):
    for i, layer in enumerate(model.model.layers):
