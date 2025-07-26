@@ -1110,7 +1110,7 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
     
     # 处理每个回答以获取置信度标签
     responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(
-        test_dataset['question'], responses, test_dataset['correct_answer'], 
+        test_dataset['question'], outputs, test_dataset['correct_answer'], 
         dataset_name=train_config.dataset, vllm=True
     )
     
@@ -1266,7 +1266,9 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
     model.eval()
     
     # 加载分类器
-    confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=torch.float32)
+    # confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=torch.float32)
+    vocab_size = len(tokenizer)
+    confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
     confidence_classifier.eval()
     print(f"Loaded confidence classifier from {classifier_path}")
     print("Using classifier for confidence prediction")

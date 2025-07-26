@@ -124,7 +124,7 @@ def main(**kwargs):
     
     if train_config.test_original_model:
         accelerator.print("==============original test================")
-        test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
+        test_classifier(train_config, dataset_test, tokenizer, wandb_run, original=True)
 
     # 检查微调模型是否存在
     model_files_exist = (
