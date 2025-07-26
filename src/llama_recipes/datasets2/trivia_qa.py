@@ -249,7 +249,7 @@ def get_trivia_qa_raw(tokenizer, split, train_config, vllm=True):
 
 def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
-        path = "../dataset/trivia_qa/train_response_temp=0.1_10000.jsonl"
+        path = "../dataset/trivia_qa/train_response_temp=0_10000.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
     elif split == 'val':
         if train_config.train_gpt:

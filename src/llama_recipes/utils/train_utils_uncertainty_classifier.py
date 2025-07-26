@@ -209,6 +209,8 @@ def train_chat(
     }
     
     # Start the training loop
+    
+
     for epoch in range(train_config.num_epochs):
         for param_group in classifier_optimizer.param_groups:  # 只显示分类器的学习率
             print(f"Current classifier learning rate: {param_group['lr']}")
@@ -268,28 +270,13 @@ def train_chat(
                     # 数值稳定的softmax计算
                     confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
                     confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
-                    
-                    # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00]
-                    confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)  # [1, 101]
-                    
-                    # 计算期望的置信度预测值
-                    predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
-                    
-                    # 检查训练时的预测置信度
-                    if total_train_steps <= 3:
-                        accelerator.print(f"Train step {total_train_steps} - Predicted confidence stats: min={predicted_confidence.min():.4f}, max={predicted_confidence.max():.4f}")
-                        accelerator.print(f"Train step {total_train_steps} - Has NaN in predicted confidence: {torch.isnan(predicted_confidence).any()}")
-                    
-                    # 处理NaN值
-                    if torch.isnan(predicted_confidence).any():
-                        accelerator.print(f"Warning at step {total_train_steps}: Found NaN in predicted confidence during training")
-                        predicted_confidence = torch.where(torch.isnan(predicted_confidence), 
-                                                         torch.tensor(0.5, device=predicted_confidence.device, dtype=predicted_confidence.dtype), 
-                                                         predicted_confidence)
+                                        
                     
                     # 计算Brier Score损失（只针对分类器）
-                    squared_differences = (predicted_confidence - y.squeeze()) ** 2
-                    loss_cal = torch.mean(squared_differences)
+                    y_expanded = y.expand(y.shape[0], 101)
+                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(confidence_probs  * squared_differences, dim=1))
                     
                     # 检查损失是否为NaN
                     if torch.isnan(loss_cal):
