@@ -58,15 +58,17 @@ class ConfidenceClassifier(nn.Module):
     
     def init_weights(self):
         """初始化模型权重，防止极端值"""
-        for module in self.modules():
+        # 初始化特征提取层
+        for i, module in enumerate(self.feature_extractor):
             if isinstance(module, nn.Linear):
-                # 使用Xavier初始化
-                nn.init.xavier_uniform_(module.weight, gain=0.1)  # 使用较小的gain
+                # 使用正态分布初始化，标准差较小
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         
-        # 特别初始化最后的分类器层，使初始输出接近均匀分布
-        nn.init.xavier_uniform_(self.classifier.weight, gain=0.01)
+        # 特别初始化最后的分类器层
+        # 使其初始输出接近均匀分布（每个类别的logit接近0）
+        nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
         nn.init.constant_(self.classifier.bias, 0)
         
     def forward(self, token_logits):
@@ -76,14 +78,34 @@ class ConfidenceClassifier(nn.Module):
         Returns:
             confidence_logits: [batch_size, num_classes] - 置信度分类logits
         """
-        # 将logits转换为概率分布作为特征
-        token_probs = F.softmax(token_logits, dim=-1)
+        # 检查输入是否有异常值
+        if torch.isnan(token_logits).any() or torch.isinf(token_logits).any():
+            print("Warning: NaN or Inf in input token_logits")
+            token_logits = torch.where(torch.isnan(token_logits) | torch.isinf(token_logits), 
+                                     torch.zeros_like(token_logits), token_logits)
+        
+        # 数值稳定的softmax计算
+        token_logits_clamped = torch.clamp(token_logits, min=-50, max=50)
+        token_probs = F.softmax(token_logits_clamped, dim=-1)
+        
+        # 检查概率是否有异常值
+        if torch.isnan(token_probs).any():
+            print("Warning: NaN in token_probs, using uniform distribution")
+            token_probs = torch.ones_like(token_probs) / token_probs.size(-1)
         
         # 特征提取
         features = self.feature_extractor(token_probs)
         
+        # 检查特征是否有异常值
+        if torch.isnan(features).any():
+            print("Warning: NaN in features")
+            features = torch.where(torch.isnan(features), torch.zeros_like(features), features)
+        
         # 分类预测
         confidence_logits = self.classifier(features)
+        
+        # 限制输出范围，防止极端值
+        confidence_logits = torch.clamp(confidence_logits, min=-10, max=10)
         
         return confidence_logits
 
@@ -181,12 +203,18 @@ def train_chat(
     
     confidence_classifier = confidence_classifier.to(model.device)
     
-    # 分类器优化器
+    # 分类器优化器 - 使用更小的学习率
+    classifier_lr = train_config.lr * 0.1  # 分类器学习率为主模型的1/10
     classifier_optimizer = torch.optim.AdamW(
         confidence_classifier.parameters(), 
-        lr=train_config.lr, 
-        weight_decay=train_config.weight_decay
+        lr=classifier_lr, 
+        weight_decay=train_config.weight_decay,
+        eps=1e-8,  # 增加数值稳定性
+        betas=(0.9, 0.999)
     )
+    
+    accelerator.print(f"Classifier learning rate: {classifier_lr}")
+    accelerator.print(f"Main model learning rate: {train_config.lr}")
     
     # 分类器学习率调度器（可选）
     from torch.optim.lr_scheduler import StepLR
@@ -251,11 +279,21 @@ def train_chat(
                 num_token1 = logits1[:,-1,:] # [batch_size, vocab_size]
                 del logits1
                 
-                # 调试信息：检查数据类型匹配
+                # 调试信息：检查数据类型匹配和输入特征
                 if total_train_steps == 1:  # 只在第一步打印，避免刷屏
                     accelerator.print(f"Input dtype: {num_token1.dtype}, Classifier dtype: {next(confidence_classifier.parameters()).dtype}")
                     accelerator.print(f"LLM requires_grad: {next(model.parameters()).requires_grad}")
                     accelerator.print(f"Classifier requires_grad: {next(confidence_classifier.parameters()).requires_grad}")
+                    accelerator.print(f"Input token logits stats: min={num_token1.min():.4f}, max={num_token1.max():.4f}, mean={num_token1.mean():.4f}")
+                    accelerator.print(f"Input has NaN: {torch.isnan(num_token1).any()}, Input has Inf: {torch.isinf(num_token1).any()}")
+                    accelerator.print(f"Y values stats: min={y.min():.4f}, max={y.max():.4f}, mean={y.mean():.4f}")
+                    accelerator.print(f"Y has NaN: {torch.isnan(y).any()}")
+                    
+                    # 检查分类器权重
+                    for name, param in confidence_classifier.named_parameters():
+                        if 'classifier' in name:  # 只检查最后的分类器层
+                            accelerator.print(f"Classifier layer {name}: min={param.min():.4f}, max={param.max():.4f}, mean={param.mean():.4f}")
+                            accelerator.print(f"Classifier layer {name} has NaN: {torch.isnan(param).any()}")
                 
                                 # 分类器训练：计算梯度
                 with autocast():
@@ -289,13 +327,54 @@ def train_chat(
                 # 只对分类器进行反向传播和参数更新
                 accelerator.backward(loss)
                 
+                # 检查梯度
+                if total_train_steps <= 3:
+                    total_grad_norm = 0
+                    for name, param in confidence_classifier.named_parameters():
+                        if param.grad is not None:
+                            param_norm = param.grad.data.norm(2)
+                            total_grad_norm += param_norm.item() ** 2
+                            if torch.isnan(param.grad).any():
+                                accelerator.print(f"Warning: NaN gradient in {name}")
+                            if torch.isinf(param.grad).any():
+                                accelerator.print(f"Warning: Inf gradient in {name}")
+                    total_grad_norm = total_grad_norm ** (1. / 2)
+                    accelerator.print(f"Step {total_train_steps} - Total gradient norm: {total_grad_norm:.4f}")
+                
                 # 梯度裁剪，防止梯度爆炸
                 if hasattr(confidence_classifier, "module"):
-                    torch.nn.utils.clip_grad_norm_(confidence_classifier.module.parameters(), max_norm=1.0)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(confidence_classifier.module.parameters(), max_norm=1.0)
                 else:
-                    torch.nn.utils.clip_grad_norm_(confidence_classifier.parameters(), max_norm=1.0)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(confidence_classifier.parameters(), max_norm=1.0)
+                
+                if total_train_steps <= 3:
+                    accelerator.print(f"Step {total_train_steps} - Gradient norm after clipping: {grad_norm:.4f}")
                 
                 classifier_optimizer.step()
+                
+                # 检查权重更新后是否有NaN，如果有则重新初始化
+                nan_detected = False
+                for name, param in confidence_classifier.named_parameters():
+                    if torch.isnan(param).any():
+                        accelerator.print(f"Error: NaN detected in {name} after optimizer step, reinitializing...")
+                        nan_detected = True
+                        if 'weight' in name:
+                            nn.init.normal_(param.data, mean=0.0, std=0.01)
+                        elif 'bias' in name:
+                            nn.init.constant_(param.data, 0)
+                    if torch.isinf(param).any():
+                        accelerator.print(f"Error: Inf detected in {name} after optimizer step, reinitializing...")
+                        nan_detected = True
+                        if 'weight' in name:
+                            nn.init.normal_(param.data, mean=0.0, std=0.01)
+                        elif 'bias' in name:
+                            nn.init.constant_(param.data, 0)
+                
+                if nan_detected:
+                    # 重置优化器状态
+                    classifier_optimizer.state = {}
+                    accelerator.print("Optimizer state reset due to NaN/Inf detection")
+                
                 classifier_optimizer.zero_grad()
                 total_loss += loss.detach().float()
 

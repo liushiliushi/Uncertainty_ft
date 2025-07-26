@@ -191,11 +191,13 @@ def main(**kwargs):
     elif torch.cuda.is_available():
         model.to("cuda")
 
-    optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
-    scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
+    # 创建一个虚拟优化器，因为train_chat函数需要这个参数，但实际不会用到
+    # 真正的分类器优化器会在train_chat函数内部创建
+    dummy_optimizer = optim.AdamW([torch.tensor(0.0)], lr=1e-8)  # 虚拟参数和极小学习率
+    dummy_scheduler = StepLR(dummy_optimizer, step_size=1, gamma=1.0)
 
-    model, optimizer, train_dataloader,  = accelerator.prepare(
-        model, optimizer, train_dataloader, 
+    model, dummy_optimizer, train_dataloader = accelerator.prepare(
+        model, dummy_optimizer, train_dataloader, 
     )
     if eval_dataloader is not None:
         eval_dataloader = accelerator.prepare(eval_dataloader)
@@ -209,8 +211,8 @@ def main(**kwargs):
         eval_dataloader,
         dataset_test,
         tokenizer,
-        optimizer,
-        scheduler,
+        dummy_optimizer,  # 这个不会被用到
+        dummy_scheduler,   # 这个不会被用到
         train_config.gradient_accumulation_steps,
         train_config,
         accelerator,         # 传入 accelerator
