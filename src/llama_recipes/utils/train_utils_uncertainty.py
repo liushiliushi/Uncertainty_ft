@@ -141,6 +141,9 @@ def train_chat(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
+                print(batch['input_ids'].size()[1])
+                if batch['input_ids'].size()[1] > 1000:
+                    continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -314,6 +317,7 @@ def train_gpt(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
+
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:

@@ -39,6 +39,32 @@ system_prompt = """You will be asked trivia questions. Please respond to the bes
             Response: Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
             Final answer: NONE
             Confidence: 0%"""
+
+system_prompt_confidence = """You will be asked trivia questions. Please respond to the best of your ability.
+            
+            First, please provide your confidence (0%-100%) to your answer.
+            Then, provide your response, which should be more than a single word, but limited to 1-2 sentences.
+            Finally, please extract a single answer from the your response. If no answer is present, please write "NONE".
+
+            Here are some examples:
+
+            Question: Who wrote Paradise Lost?
+            Response: Confidence: 90%
+            The author of Paradise Lost was John Milton, who published the book in 1667.
+            Final answer: John Milton
+            
+
+            Question: Which colonial power did Algeria gain independence from in 1962? 
+            Response: Confidence: 100%
+            Algeria gained independence from France in 1962 after years of bloody conflict.
+            Final answer: France
+            
+
+            Question: How many planets are in our solar system?
+            Response: Confidence: 0%
+            Please respond to the survey link below: https://www.surveymonkey.com/r/5VZ7Z6P
+            Final answer: NONE
+            """
 # system_prompt_linguistic = """You will be asked trivia questions. Please respond to the best of your ability.
 #             Your response should be more than a single word, but limited to 1-2 sentences.
 #             Then please extract a single answer from the your response. If no answer is present, please write "NONE".
@@ -246,6 +272,101 @@ def get_trivia_qa_raw(tokenizer, split, train_config, vllm=True):
 
     dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
     return dataset
+
+def get_trivia_qa_confidence(tokenizer, split, train_config, on_policy = False):
+    if split == 'train':
+        path = "../dataset/trivia_qa/train_response_temp=0_10000.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:2000]')
+    elif split == 'val':
+        if train_config.train_gpt:
+            path = "../dataset/trivia_qa/validation_gpt_temp=0_1000.jsonl"
+        else:
+            path = "../dataset/trivia_qa/validation_response_temp=0.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+    else:
+        path = "../dataset/trivia_qa/validation_response_temp=0_10000.jsonl"
+        dataset = datasets.load_dataset('json', data_files=path, split='train[:1000]')
+
+    def apply_prompt_template(sample):
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content":  f"{system_prompt_confidence}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+            ]
+        else:
+            prompt = [{'role': 'system', 'content': system_prompt_confidence},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:{sample['response_clean']}"}
+                ]
+        matches1 = re.findall("Final answer: (.*)", sample['response_clean'])
+        matches2 = re.findall("Confidence:", sample['response_clean'])
+        if matches1 and matches2:
+            answer = re.findall("Final answer: (.*)", sample['response_clean'])[-1]
+            y  = 1 if normalize_answer(answer).lower().strip() in sample['correct_answer'] else 0
+            return {
+                "prompt": prompt,
+                "y": y,
+            }
+        else:
+            print("Error")
+            print(sample['response_clean'])
+            return {
+                "prompt": prompt,
+                "y": 0,
+            }
+        
+    def apply_prompt_template_test(sample):
+        global system_prompt_confidence
+        if "Ministral" in train_config.model_name:
+            prompt = [
+                {"role": "user", "content": f"{system_prompt_confidence}\n\nQuestion: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+        else: 
+            prompt = [{'role': 'system', 'content': system_prompt_confidence},
+                {"role": "user", "content":  f"Question: {sample['question']}"},
+                {"role": "assistant", "content": f"Response:"},
+                ]
+        return {
+            'question': json.dumps(sample['question']),
+            "prompt": json.dumps(prompt),
+            "correct_answer": json.dumps(sample['correct_answer']),
+        }
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+    else:
+        if split == 'val':
+            dataset = dataset.map(apply_prompt_template, remove_columns=list(dataset.features))
+        else:
+            dataset = dataset.map(apply_prompt_template_test, remove_columns=list(dataset.features))
+
+
+    def tokenize_add_label(sample):
+        prompt = tokenizer.apply_chat_template(sample['prompt'], tokenize=True, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True).squeeze(0)
+        prompt = torch.cat((prompt, torch.tensor([220]))) # manually add white space because the tokenizer will automatically remove the white space ate the end of the sentence
+        response = torch.tensor(tokenizer.encode(sample['prompt'][2]['content'], add_special_tokens=False))
+        sample = {
+            "input_ids": prompt,
+            "attention_mask" : [1] * (len(prompt)),
+            'label': [-100] * (len(prompt)-len(response)) + response.tolist(),
+            'y': [sample['y']]
+            }
+
+        return sample
+    if on_policy == False:
+        if split == 'test':
+            dataset = dataset
+        else:
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    else:
+        if split == 'val':
+            dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
+    return dataset
+
+
 
 def get_trivia_qa(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
