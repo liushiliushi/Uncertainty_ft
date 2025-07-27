@@ -1491,42 +1491,16 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         classifier_confidences = []
         
         with torch.no_grad():
-            for i in tqdm(range(0, len(responses_filtered), batch_size), desc="Classifier inference"):
-                batch_end = min(i + batch_size, len(responses_filtered))
-                batch_prompts = responses_filtered[i:batch_end]
-                
-                # 构建带有置信度问题的prompts
-                confidence_prompts = []
-                for j, response in enumerate(batch_prompts):
-                    # 获取对应的问题和回答
-                    question = questions[i+j] if i+j < len(questions) else ""
-                    
-                    # 构建置信度问题的prompt
-                    confidence_prompt = [
-                        {"role": "user", "content": question},
-                        {"role": "assistant", "content": f"{response}\n\nHow confident are you in this answer? Please provide a confidence level from 0 to 100: "}
-                    ]
-                    confidence_prompts.append(confidence_prompt)
-                
-                # Tokenize
-                query_tensors = tokenizer.apply_chat_template(
-                    confidence_prompts,
-                    tokenize=True,
-                    padding="longest",
-                    padding_side='left',
-                    truncation=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    continue_final_message=True
-                ).to(model.device)
-                
-                # 添加空格token
-                white_spaces = torch.full((len(confidence_prompts), 1), 220).to(model.device)
-                white_attention = torch.full((len(confidence_prompts), 1), 1).to(model.device)
-                query_tensors['input_ids'] = torch.cat([query_tensors['input_ids'], white_spaces], dim=1)
-                query_tensors['attention_mask'] = torch.cat([query_tensors['attention_mask'], white_attention], dim=1)
-                
-                # 获取logits
+            confidence_prompts = []
+            for i, resopnse in enumerate(out_response_cleans):                
+                prompt_tmp = json.loads(test_dataset["prompt"][i])
+                prompt_tmp[2]['content'] += out_response_cleans[i]
+                confidence_prompt = prompt_tmp
+                confidence_prompts.append(confidence_prompt)
+            confidence_prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+            outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+       
+            if True:
                 logits = model(**query_tensors).logits
                 
                 # 使用分类器预测置信度
