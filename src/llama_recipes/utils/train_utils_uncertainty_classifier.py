@@ -1468,7 +1468,8 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         temperature=train_config.temperature,
         top_k=-1,
         top_p=1.0,
-        max_tokens=400
+        max_tokens=400,
+        logprobs=len(tokenizer)  # 返回所有vocab的log probabilities
     )
 
     wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
@@ -1492,7 +1493,7 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         
         with torch.no_grad():
             confidence_prompts = []
-            for i, resopnse in enumerate(out_response_cleans):                
+            for i, response in enumerate(out_response_cleans):                
                 prompt_tmp = json.loads(test_dataset["prompt"][i])
                 prompt_tmp[2]['content'] += out_response_cleans[i]
                 confidence_prompt = prompt_tmp
@@ -1500,19 +1501,33 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
             confidence_prompts = tokenizer.apply_chat_template(confidence_prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
             outputs = llm.generate(prompts=confidence_prompts, sampling_params=sampling_params)
        
-            if True:
-                logits = model(**query_tensors).logits
+            # 从VLLM的outputs中重构logits
+            batch_logits = []
+            for output in outputs:
+                # 获取最后一个token的logprobs
+                last_token_logprobs = output.outputs[0].logprobs[-1]  # 最后一个生成token的logprobs
                 
-                # 使用分类器预测置信度
-                num_token = logits[:, -1, :]  # [batch_size, vocab_size]
-                confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
+                # 创建一个全零的logits向量
+                logits_vector = torch.full((len(tokenizer),), float('-inf'))
                 
-                # 计算期望置信度
-                confidence_probs = F.softmax(confidence_logits, dim=1)
-                confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
+                # 从logprobs中填充logits
+                for token_id, logprob in last_token_logprobs.items():
+                    logits_vector[token_id] = logprob
                 
-                classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
+                batch_logits.append(logits_vector)
+            
+            # 将所有样本的logits堆叠成batch
+            logits = torch.stack(batch_logits).to(model.device)  # [batch_size, vocab_size]
+            
+            # 使用分类器预测置信度
+            confidence_logits = confidence_classifier(logits)  # [batch_size, 101]
+            
+            # 计算期望置信度
+            confidence_probs = F.softmax(confidence_logits, dim=1)
+            confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)
+            predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
+            
+            classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
         
         # 使用分类器的置信度预测
         out_confidences = classifier_confidences
