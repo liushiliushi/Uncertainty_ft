@@ -357,7 +357,34 @@ def train_chat(
                 y_expanded = y_float32.expand(y_float32.shape[0], 101)  # 使用float32版本的y
                 scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
                 squared_differences = (y_expanded - scores) ** 2
-                loss_cal = torch.mean(torch.sum(confidence_probs * squared_differences, dim=1))
+                
+                # 计算每个样本的损失（不取平均）
+                individual_losses = torch.sum(confidence_probs * squared_differences, dim=1)  # [batch_size]
+                loss_cal = torch.mean(individual_losses)  # 批次平均损失
+                
+                # 输出每个数据对应的损失
+                should_print_losses = (total_train_steps <= 5) or (total_train_steps % 50 == 0)  # 前5步 + 每50步输出一次
+                
+                if should_print_losses:
+                    accelerator.print(f"\n=== Step {total_train_steps} Individual Losses ===")
+                    # 最多显示前10个样本的损失，避免输出过长
+                    max_samples_to_show = min(10, len(individual_losses))
+                    for i in range(max_samples_to_show):
+                        sample_loss = individual_losses[i].item()
+                        pred_conf = predicted_confidence[i].item()
+                        true_label = y_float32[i].item()
+                        accelerator.print(f"Sample {i+1}: Loss={sample_loss:.6f}, Pred={pred_conf:.4f}, True={true_label:.4f}")
+                    
+                    if len(individual_losses) > max_samples_to_show:
+                        accelerator.print(f"... and {len(individual_losses) - max_samples_to_show} more samples")
+                    
+                    # 统计损失分布
+                    loss_min = individual_losses.min().item()
+                    loss_max = individual_losses.max().item()
+                    loss_std = individual_losses.std().item()
+                    accelerator.print(f"Loss Distribution: min={loss_min:.6f}, max={loss_max:.6f}, mean={loss_cal.item():.6f}, std={loss_std:.6f}")
+                    accelerator.print("=" * 50)
+                
                 if True:
                     # 检查损失是否为NaN或Inf
                     if torch.isnan(loss_cal) or torch.isinf(loss_cal):
