@@ -295,7 +295,7 @@ def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
             dataset = dataset.map(tokenize_add_label, remove_columns=list(dataset.features))
     return dataset
 
-def get_truthful_qa(tokenizer, split, train_config, on_policy = False):
+def get_truthful_qa_implicit(tokenizer, split, train_config, on_policy = False):
     if split == 'train':
         path = "../dataset/truthful_qa/tqa_train_response.jsonl"
         dataset = datasets.load_dataset('json', data_files=path, split='train')
