@@ -31,52 +31,153 @@ from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confi
 from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_classifier
 from vllm import LLM, SamplingParams
 
+def balance_batch_data(batch, y, target_ratio=0.6):
+    """
+    平衡batch数据，确保每个batch都包含正负样本
+    
+    Args:
+        batch: 当前batch数据
+        y: 标签张量 [batch_size, 1]
+        target_ratio: 目标主要类别的最大比例（默认0.6，即60%）
+    
+    Returns:
+        (balanced_batch, balanced_y) 或 None（如果无法平衡）
+    """
+    try:
+        # 获取标签和索引
+        unique_labels, counts = torch.unique(y, return_counts=True)
+        
+        if len(unique_labels) == 1:
+            # 如果只有一种标签，无法平衡
+            return None
+        
+        batch_size = len(y)
+        label_ratios = counts.float() / batch_size
+        
+        # 找出主要类别和次要类别
+        majority_label = unique_labels[torch.argmax(counts)]
+        minority_label = unique_labels[torch.argmin(counts)]
+        
+        majority_indices = (y.squeeze() == majority_label).nonzero(as_tuple=False).squeeze()
+        minority_indices = (y.squeeze() == minority_label).nonzero(as_tuple=False).squeeze()
+        
+        # 确保indices是一维张量
+        if majority_indices.dim() == 0:
+            majority_indices = majority_indices.unsqueeze(0)
+        if minority_indices.dim() == 0:
+            minority_indices = minority_indices.unsqueeze(0)
+            
+        # 计算目标数量
+        target_majority_count = min(int(batch_size * target_ratio), len(majority_indices))
+        target_minority_count = batch_size - target_majority_count
+        
+        # 如果次要类别样本不够，调整
+        if len(minority_indices) < target_minority_count:
+            target_minority_count = len(minority_indices)
+            target_majority_count = batch_size - target_minority_count
+        
+        # 随机选择样本
+        if len(majority_indices) > target_majority_count:
+            majority_selected = majority_indices[torch.randperm(len(majority_indices))[:target_majority_count]]
+        else:
+            majority_selected = majority_indices
+            
+        if len(minority_indices) > target_minority_count:
+            minority_selected = minority_indices[torch.randperm(len(minority_indices))[:target_minority_count]]
+        else:
+            minority_selected = minority_indices
+        
+        # 合并选中的索引
+        selected_indices = torch.cat([majority_selected, minority_selected])
+        
+        # 如果选中的样本数太少，返回None
+        if len(selected_indices) < max(4, batch_size // 2):
+            return None
+        
+        # 重新排列选中的索引
+        selected_indices = selected_indices[torch.randperm(len(selected_indices))]
+        
+        # 创建平衡的batch
+        balanced_y = y[selected_indices]
+        
+        # 创建平衡的batch数据
+        balanced_batch = type(batch)()
+        balanced_batch.data = {}
+        
+        for key, value in batch.data.items():
+            if key != 'y':  # y已经被pop出来了
+                if isinstance(value, torch.Tensor):
+                    balanced_batch.data[key] = value[selected_indices]
+                elif isinstance(value, list):
+                    balanced_batch.data[key] = [value[i] for i in selected_indices.cpu().numpy()]
+                else:
+                    # 对于其他类型，尝试索引操作
+                    try:
+                        balanced_batch.data[key] = [value[i] for i in selected_indices.cpu().numpy()]
+                    except:
+                        # 如果无法索引，保持原值
+                        balanced_batch.data[key] = value
+        
+        # 复制其他属性
+        for attr_name in dir(batch):
+            if not attr_name.startswith('_') and attr_name != 'data' and hasattr(batch, attr_name):
+                attr_value = getattr(batch, attr_name)
+                if not callable(attr_value):
+                    setattr(balanced_batch, attr_name, attr_value)
+        
+        return balanced_batch, balanced_y
+        
+    except Exception as e:
+        # 如果平衡过程出错，返回None
+        print(f"Error in balance_batch_data: {str(e)}")
+        return None
+
 class ConfidenceClassifier(nn.Module):
     """
     置信度分类器：将token概率分布转换为0-100的置信度预测
     """
-    def __init__(self, vocab_size, hidden_dim=512, num_classes=101):
+    def __init__(self, vocab_size, hidden_dim=1024, num_classes=101):
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes  # 0-100，共101个类别
         
-        # 特征提取层
+        # 更深的特征提取层，增加网络容量
         self.feature_extractor = nn.Sequential(
             nn.Linear(vocab_size, hidden_dim),
+            nn.LayerNorm(hidden_dim),  # 添加层归一化
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),  # 增加一层
+            nn.LayerNorm(hidden_dim // 4),
             nn.ReLU(),
             nn.Dropout(0.1)
         )
         
         # 分类器头
-        self.classifier = nn.Linear(hidden_dim // 2, num_classes)
+        self.classifier = nn.Linear(hidden_dim // 4, num_classes)
         
         # 初始化权重
         self.init_weights()
     
     def init_weights(self):
-        """初始化模型权重，防止极端值"""
-        # 初始化特征提取层 - 考虑输入维度很大，使用更小的标准差
+        """初始化模型权重，使用更积极的初始化策略"""
+        # 初始化特征提取层 - 使用标准的Xavier初始化
         for i, module in enumerate(self.feature_extractor):
             if isinstance(module, nn.Linear):
-                # 使用Xavier初始化的思想：std = sqrt(2 / (fan_in + fan_out))
-                fan_in = module.weight.size(1)
-                fan_out = module.weight.size(0)
-                std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.1  # 再乘以0.1使其更小
-                nn.init.normal_(module.weight, mean=0.0, std=std)
+                # 使用标准的Xavier/Glorot初始化
+                nn.init.xavier_uniform_(module.weight, gain=nn.init.calculate_gain('relu'))
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         
-        # 特别初始化最后的分类器层
-        # 使其初始输出接近均匀分布（每个类别的logit接近0）
-        fan_in = self.classifier.weight.size(1)
-        fan_out = self.classifier.weight.size(0)
-        std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.01  # 更小的标准差
-        nn.init.normal_(self.classifier.weight, mean=0.0, std=std)
-        nn.init.constant_(self.classifier.bias, 0)
+        # 分类器层使用He初始化，并添加小的随机偏置来打破对称性
+        nn.init.kaiming_uniform_(self.classifier.weight, mode='fan_in', nonlinearity='linear')
+        # 给偏置添加小的随机值，而不是全零，有助于打破对称性
+        nn.init.uniform_(self.classifier.bias, -0.1, 0.1)
         
     def forward(self, token_logits):
         """
@@ -213,10 +314,11 @@ def train_chat(
     
     accelerator.print(f"Model dtype: {model_dtype}, Classifier dtype: {classifier_dtype}")
     
-    # 分类器优化器 - 使用适中的学习率
-    # 如果主模型学习率太小，给分类器设置一个最小学习率
-    min_classifier_lr = 1e-5  # 分类器最小学习率
-    classifier_lr = max(train_config.lr * 0.5, min_classifier_lr)  # 分类器学习率为主模型的一半，但不小于最小值
+    # 分类器优化器 - 使用更积极的学习率
+    # 给分类器设置一个更合理的学习率范围
+    min_classifier_lr = 1e-4  # 提高最小学习率
+    max_classifier_lr = 1e-3  # 设置最大学习率，防止过大
+    classifier_lr = min(max(train_config.lr * 2.0, min_classifier_lr), max_classifier_lr)  # 分类器学习率为主模型的2倍，但有上下限
     
     classifier_optimizer = torch.optim.AdamW(
         confidence_classifier.parameters(), 
@@ -230,9 +332,22 @@ def train_chat(
     accelerator.print(f"Main model learning rate: {train_config.lr}")
     accelerator.print(f"Classifier weight decay: {train_config.weight_decay * 0.1}")
     
-    # 分类器学习率调度器（可选）
-    from torch.optim.lr_scheduler import StepLR
-    classifier_lr_scheduler = StepLR(classifier_optimizer, step_size=1, gamma=train_config.gamma if hasattr(train_config, 'gamma') else 1.0)
+    # 分类器学习率调度器：使用带预热的余弦调度
+    from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+    
+    # 预热阶段：前10%的steps使用线性增长
+    warmup_steps = max(1, int(0.1 * train_config.num_epochs * len(train_dataloader)))
+    # 主要阶段：使用余弦衰减
+    main_steps = train_config.num_epochs * len(train_dataloader) - warmup_steps
+    
+    warmup_scheduler = LinearLR(classifier_optimizer, start_factor=0.1, total_iters=warmup_steps)
+    main_scheduler = CosineAnnealingLR(classifier_optimizer, T_max=main_steps, eta_min=classifier_lr * 0.1)
+    
+    classifier_lr_scheduler = SequentialLR(
+        classifier_optimizer, 
+        schedulers=[warmup_scheduler, main_scheduler], 
+        milestones=[warmup_steps]
+    )
     
     # 准备分类器参与accelerate
     confidence_classifier, classifier_optimizer = accelerator.prepare(
@@ -254,8 +369,8 @@ def train_chat(
     
 
     for epoch in range(train_config.num_epochs):
-        for param_group in classifier_optimizer.param_groups:  # 只显示分类器的学习率
-            print(f"Current classifier learning rate: {param_group['lr']}")
+        current_lr = classifier_optimizer.param_groups[0]['lr']
+        accelerator.print(f"Epoch {epoch+1}/{train_config.num_epochs} - Current classifier learning rate: {current_lr:.6f}")
         # stop when the maximum number of training steps is reached
         if max_steps_reached:
             break
@@ -353,14 +468,47 @@ def train_chat(
                     accelerator.print(f"True range: [{y_float32.min():.4f}, {y_float32.max():.4f}]")
                     accelerator.print("=" * 50)
                 
-                # 计算Brier Score损失（只针对分类器）- 全部使用float32
+                # 计算改进的损失函数（Brier Score + Diversity Loss + Focal Loss）
                 y_expanded = y_float32.expand(y_float32.shape[0], 101)  # 使用float32版本的y
                 scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
                 squared_differences = (y_expanded - scores) ** 2
                 
-                # 计算每个样本的损失（不取平均）
-                individual_losses = torch.sum(confidence_probs * squared_differences, dim=1)  # [batch_size]
-                loss_cal = torch.mean(individual_losses)  # 批次平均损失
+                # 1. Brier Score损失
+                brier_losses = torch.sum(confidence_probs * squared_differences, dim=1)  # [batch_size]
+                brier_loss = torch.mean(brier_losses)
+                
+                # 2. 多样性损失：鼓励批次内预测的多样性
+                batch_diversity_loss = 0.0
+                if len(predicted_confidence) > 1:
+                    # 计算预测置信度的方差，方差越大越好（多样性越高）
+                    pred_var = torch.var(predicted_confidence)
+                    # 将方差转换为损失（方差小时损失大）
+                    diversity_loss = torch.exp(-pred_var * 10)  # 10是调节因子
+                    batch_diversity_loss = diversity_loss
+                
+                # 3. Focal Loss：对于困难样本给予更多关注
+                # 计算每个类别的真实概率（one-hot编码）
+                y_indices = (y_float32.squeeze() * 100).long().clamp(0, 100)  # 转换为类别索引
+                y_one_hot = torch.zeros_like(confidence_probs)
+                y_one_hot.scatter_(1, y_indices.unsqueeze(1), 1.0)
+                
+                # Focal loss with gamma=2
+                gamma = 2.0
+                pt = torch.sum(confidence_probs * y_one_hot, dim=1)  # 真实类别的预测概率
+                focal_losses = -torch.pow(1 - pt, gamma) * torch.log(pt + 1e-8)
+                focal_loss = torch.mean(focal_losses)
+                
+                # 组合损失
+                alpha_brier = 1.0      # Brier Score权重
+                alpha_diversity = 0.1  # 多样性损失权重  
+                alpha_focal = 0.5      # Focal Loss权重
+                
+                loss_cal = (alpha_brier * brier_loss + 
+                           alpha_diversity * batch_diversity_loss + 
+                           alpha_focal * focal_loss)
+                
+                # 计算每个样本的损失（用于显示）
+                individual_losses = brier_losses  # 仍然显示Brier Score作为个体损失
                 
                 # 输出每个数据对应的损失
                 should_print_losses = (total_train_steps <= 5) or (total_train_steps % 50 == 0)  # 前5步 + 每50步输出一次
@@ -382,7 +530,20 @@ def train_chat(
                     loss_min = individual_losses.min().item()
                     loss_max = individual_losses.max().item()
                     loss_std = individual_losses.std().item()
-                    accelerator.print(f"Loss Distribution: min={loss_min:.6f}, max={loss_max:.6f}, mean={loss_cal.item():.6f}, std={loss_std:.6f}")
+                    
+                    # 显示各个损失组件
+                    accelerator.print(f"Loss Components:")
+                    accelerator.print(f"  Brier Loss: {brier_loss.item():.6f}")
+                    accelerator.print(f"  Diversity Loss: {batch_diversity_loss:.6f}")
+                    accelerator.print(f"  Focal Loss: {focal_loss.item():.6f}")
+                    accelerator.print(f"  Total Loss: {loss_cal.item():.6f}")
+                    
+                    # 统计预测多样性
+                    pred_min = predicted_confidence.min().item()
+                    pred_max = predicted_confidence.max().item()
+                    pred_std = predicted_confidence.std().item()
+                    accelerator.print(f"Prediction Stats: min={pred_min:.4f}, max={pred_max:.4f}, std={pred_std:.4f}")
+                    accelerator.print(f"Brier Loss Distribution: min={loss_min:.6f}, max={loss_max:.6f}, mean={brier_loss.item():.6f}, std={loss_std:.6f}")
                     accelerator.print("=" * 50)
                 
                 if True:
@@ -432,6 +593,9 @@ def train_chat(
                 
                 classifier_optimizer.step()
                 
+                # 更新学习率调度器（每step调用）
+                classifier_lr_scheduler.step()
+                
                 # 检查权重更新后是否有NaN，如果有则重新初始化
                 nan_detected = False
                 for name, param in confidence_classifier.named_parameters():
@@ -473,8 +637,7 @@ def train_chat(
         avg_loss = total_loss / len(train_dataloader)
         avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
 
-        # Update the learning rate as needed (only for classifier)
-        classifier_lr_scheduler.step()  # 更新分类器的学习率
+        # 注意：学习率调度器现在在每个step调用，不需要在epoch结束时调用
         if train_config.run_validation:
             eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                 model,
