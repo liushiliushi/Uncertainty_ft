@@ -147,8 +147,8 @@ def confidence_replace_implicit(prompts, answers, correct_answers, dataset_name=
                     else:
                         matches1 = re.findall("Final answer: (.*)", qblock)
                     if matches1 and confidence_score is not None:
-                        out_confidences.append(f"{confidence_score}%")  # Format as percentage string
-                        confidences_None.append(f"{confidence_score}%")
+                        out_confidences.append(f"{confidence_score}")  # Format as percentage string
+                        confidences_None.append(f"{confidence_score}")
                         if dataset_name == 'gsm8k_dataset':
                             correct = extract_number(matches1[-1]) == json.loads(correct_answers[id])
                         elif dataset_name == "trivia_qa" or dataset_name == "strategy_qa":
@@ -185,10 +185,8 @@ def confidence_replace_implicit(prompts, answers, correct_answers, dataset_name=
             id += 1
     out_confidences2 = []
     for percent_str in out_confidences:
-        # 使用正则匹配 "数字%" 格式
-        match = re.search(r"(\d+\.?\d*)%", percent_str)
-        if match:
-            percent = float(match.group(1)) / 100
+        if percent_str != None:
+            percent = float(percent_str) / 100
             out_confidences2.append(percent)
         else:
             # 处理无效值（例如设为 0 或记录警告）
