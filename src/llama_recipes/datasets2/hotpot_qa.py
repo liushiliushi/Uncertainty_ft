@@ -257,7 +257,7 @@ def get_hotpot_qa(tokenizer, split, train_config, on_policy = False):
             if train_config.train_gpt:
                 path = "../dataset/hotpot_qa/train_response_gpt.jsonl"
             else:
-                path = "../dataset/hotpot_qa/train_llama_temp=0_10000.jsonl"
+                path = "../dataset/hotpot_qa/train_Qwen_temp=0_10000.jsonl"
         elif "Qwen" in train_config.model_name:
             if train_config.train_gpt:
                 path = "../dataset/hotpot_qa/train_response_gpt.jsonl"

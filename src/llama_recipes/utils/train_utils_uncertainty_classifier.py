@@ -511,7 +511,7 @@ def train_chat(
                 individual_losses = brier_losses  # 仍然显示Brier Score作为个体损失
                 
                 # 输出每个数据对应的损失
-                should_print_losses = (total_train_steps <= 5) or (total_train_steps % 50 == 0)  # 前5步 + 每50步输出一次
+                should_print_losses = (total_train_steps <= 5) or (total_train_steps % 10 == 0)  # 前5步 + 每50步输出一次
                 
                 if should_print_losses:
                     accelerator.print(f"\n=== Step {total_train_steps} Individual Losses ===")
