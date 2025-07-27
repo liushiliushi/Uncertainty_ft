@@ -1497,8 +1497,8 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
                 prompt_tmp[2]['content'] += out_response_cleans[i]
                 confidence_prompt = prompt_tmp
                 confidence_prompts.append(confidence_prompt)
-            confidence_prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
-            outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+            confidence_prompts = tokenizer.apply_chat_template(confidence_prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+            outputs = llm.generate(prompts=confidence_prompts, sampling_params=sampling_params)
        
             if True:
                 logits = model(**query_tensors).logits
