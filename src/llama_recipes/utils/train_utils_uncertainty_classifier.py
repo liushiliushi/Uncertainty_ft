@@ -32,6 +32,25 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
 
+
+class ConfidenceClassifier(nn.Module):
+    def __init__(self, lm_head, token_indices):
+        super().__init__()
+        # 提取0-100对应token的权重作为初始化
+        selected_weights = lm_head.weight[token_indices]  # [101, hidden_size]
+        selected_bias = lm_head.bias[token_indices] if lm_head.bias is not None else None  # [101]
+        
+        # 创建新的线性层
+        self.classifier = nn.Linear(lm_head.in_features, 101, bias=(lm_head.bias is not None))
+        
+        # 用选中的权重初始化
+        with torch.no_grad():
+            self.classifier.weight.data = selected_weights
+            if selected_bias is not None:
+                self.classifier.bias.data = selected_bias
+    
+    def forward(self, hidden_states):
+        return self.classifier(hidden_states)
 @contextlib.contextmanager
 def profile(cfg, accelerator=None):
     """
@@ -126,7 +145,10 @@ def train_chat(
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
     }
-    
+    # 在训练循环开始前初始化classifier
+    confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices).to(model.device)
+    # 将这个classifier加入到optimizer中
+    optimizer.add_param_group({'params': confidence_classifier.parameters()})
     # Start the training loop
     for epoch in range(train_config.num_epochs):
         for param_group in optimizer.param_groups:
@@ -156,7 +178,7 @@ def train_chat(
                 output = model(**batch, output_hidden_states=True)
                 hidden = output.hidden_states[-1]
                 hidden = hidden[:,-1,:]
-                num_token = model.lm_head(hidden)
+                num_token = confidence_classifier(hidden)
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':
