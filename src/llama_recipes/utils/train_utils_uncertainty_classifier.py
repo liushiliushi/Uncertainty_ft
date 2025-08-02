@@ -239,6 +239,7 @@ def train_chat(
         if train_config.run_validation and accelerator.is_main_process:
             eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
                 model,
+                confidence_classifier,
                 train_config,
                 eval_dataloader,
                 tokenizer,
@@ -517,6 +518,7 @@ def train_gpt(
 
 def evaluation_chat(
     model,
+    confidence_classifier,
     train_config,
     eval_dataloader,
     tokenizer,
