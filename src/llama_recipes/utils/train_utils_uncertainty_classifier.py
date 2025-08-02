@@ -32,7 +32,7 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
 
-
+import torch.nn as nn
 class ConfidenceClassifier(nn.Module):
     def __init__(self, lm_head, token_indices):
         super().__init__()
@@ -85,6 +85,7 @@ def profile(cfg, accelerator=None):
 
 def train_chat(
     model,
+    confidence_classifier,
     train_dataloader,
     eval_dataloader,
     test_dataloader,
@@ -145,11 +146,7 @@ def train_chat(
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
     }
-    # 在训练循环开始前初始化classifier
-    confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices).to(model.device)
-    # 将这个classifier加入到optimizer中
-    optimizer.add_param_group({'params': confidence_classifier.parameters()})
-    # Start the training loop
+    
     for epoch in range(train_config.num_epochs):
         for param_group in optimizer.param_groups:
             print(f"Current learning rate: {param_group['lr']}")
@@ -158,7 +155,6 @@ def train_chat(
             break
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
-            trans = model.lm_head
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
@@ -178,7 +174,8 @@ def train_chat(
                 output = model(**batch, output_hidden_states=True)
                 hidden = output.hidden_states[-1]
                 hidden = hidden[:,-1,:]
-                num_token = confidence_classifier(hidden)
+                num_conf = torch.index_select(hidden, 1, num_indices.squeeze(0))
+                num_token = confidence_classifier(num_conf)
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':

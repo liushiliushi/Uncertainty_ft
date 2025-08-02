@@ -32,6 +32,7 @@ from llama_recipes.utils.dataset_utils import get_preprocessed_dataset2
 from llama_recipes.utils.train_utils_uncertainty_classifier import (
     clear_gpu_cache,
     print_model_size,
+    ConfidenceClassifier
 )
 from warnings import warn
 import sys
@@ -222,9 +223,17 @@ def main(**kwargs):
     elif torch.cuda.is_available():
         model.to("cuda")
 
-    optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    print("----------------------------")
+    print(token_ids)
+    num_indices = torch.tensor(token_ids).to(model.device)
+    confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices).to(model.device)
+    optimizer = optim.AdamW(confidence_classifier.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
-
+    
+    # Start the training loop
     model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, 
     )
@@ -292,6 +301,7 @@ def main(**kwargs):
         else:
             results = train_chat(
                 model,
+                confidence_classifier,
                 train_dataloader,
                 eval_dataloader,
                 dataset_test,
