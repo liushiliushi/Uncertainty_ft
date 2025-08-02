@@ -237,7 +237,29 @@ def main(**kwargs):
     model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, 
     )
-    if train_config.run_validation and train_config.train_gpt:
+    if True:
+            eval_dataloaders_dict = {}
+            eval_datasets = ['trivia_qa', 'gsm8k_dataset']
+            original_dataset = train_config.dataset
+            for dataset_name in eval_datasets:
+                train_config.dataset = dataset_name     
+                dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
+                if train_config.batching_strategy == "packing":
+                    dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
+                val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
+                eval_dataloader = torch.utils.data.DataLoader(
+                    dataset_val,
+                    num_workers=train_config.num_workers_dataloader,
+                    pin_memory=True,
+                    **val_dl_kwargs,
+                )
+                accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
+
+                if len(eval_dataloader) == 0:
+                    raise ValueError("Validation set size too small to form a single batch.")
+                eval_dataloaders_dict[dataset_name] = eval_dataloader   
+            train_config.dataset = original_dataset
+    if train_config.run_validation:
         for dataset_name in eval_dataloaders_dict:
             eval_dataloaders_dict[dataset_name] = accelerator.prepare(eval_dataloaders_dict[dataset_name])
     else:
@@ -282,7 +304,6 @@ def main(**kwargs):
     else:
         from llama_recipes.utils.train_utils_uncertainty_classifier import (
             train_chat,
-            train_gpt
         )
         if train_config.train_gpt:
             results = train_gpt(
@@ -303,7 +324,7 @@ def main(**kwargs):
                 model,
                 confidence_classifier,
                 train_dataloader,
-                eval_dataloader,
+                eval_dataloaders_dict,  # Pass dictionary of dataloaders
                 dataset_test,
                 tokenizer,
                 optimizer,
