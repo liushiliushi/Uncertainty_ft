@@ -8,19 +8,17 @@ from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime
 import contextlib
-import re
 # from vllm import LLM
 # from vllm.lora.request import LoRARequest
 import torch
 import torch.cuda.nccl as nccl
 import torch.distributed as dist
+import sys
 from tqdm import tqdm
 from transformers import LlamaTokenizer
 import json
 import torch.nn.functional as F
-import torch.nn as nn
 import wandb
-import sys
 
 from llama_recipes.model_checkpointing import save_peft_checkpoint, save_model_checkpoint, save_merged_checkpoint
 from llama_recipes.policies import fpSixteen,bfSixteen, get_llama_wrapper
@@ -28,195 +26,8 @@ from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_classifier
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt,confidence_replace_correct, confidence_replace_implicit
 from vllm import LLM, SamplingParams
-
-def balance_batch_data(batch, y, target_ratio=0.6):
-    """
-    平衡batch数据，确保每个batch都包含正负样本
-    
-    Args:
-        batch: 当前batch数据
-        y: 标签张量 [batch_size, 1]
-        target_ratio: 目标主要类别的最大比例（默认0.6，即60%）
-    
-    Returns:
-        (balanced_batch, balanced_y) 或 None（如果无法平衡）
-    """
-    try:
-        # 获取标签和索引
-        unique_labels, counts = torch.unique(y, return_counts=True)
-        
-        if len(unique_labels) == 1:
-            # 如果只有一种标签，无法平衡
-            return None
-        
-        batch_size = len(y)
-        label_ratios = counts.float() / batch_size
-        
-        # 找出主要类别和次要类别
-        majority_label = unique_labels[torch.argmax(counts)]
-        minority_label = unique_labels[torch.argmin(counts)]
-        
-        majority_indices = (y.squeeze() == majority_label).nonzero(as_tuple=False).squeeze()
-        minority_indices = (y.squeeze() == minority_label).nonzero(as_tuple=False).squeeze()
-        
-        # 确保indices是一维张量
-        if majority_indices.dim() == 0:
-            majority_indices = majority_indices.unsqueeze(0)
-        if minority_indices.dim() == 0:
-            minority_indices = minority_indices.unsqueeze(0)
-            
-        # 计算目标数量
-        target_majority_count = min(int(batch_size * target_ratio), len(majority_indices))
-        target_minority_count = batch_size - target_majority_count
-        
-        # 如果次要类别样本不够，调整
-        if len(minority_indices) < target_minority_count:
-            target_minority_count = len(minority_indices)
-            target_majority_count = batch_size - target_minority_count
-        
-        # 随机选择样本
-        if len(majority_indices) > target_majority_count:
-            majority_selected = majority_indices[torch.randperm(len(majority_indices))[:target_majority_count]]
-        else:
-            majority_selected = majority_indices
-            
-        if len(minority_indices) > target_minority_count:
-            minority_selected = minority_indices[torch.randperm(len(minority_indices))[:target_minority_count]]
-        else:
-            minority_selected = minority_indices
-        
-        # 合并选中的索引
-        selected_indices = torch.cat([majority_selected, minority_selected])
-        
-        # 如果选中的样本数太少，返回None
-        if len(selected_indices) < max(4, batch_size // 2):
-            return None
-        
-        # 重新排列选中的索引
-        selected_indices = selected_indices[torch.randperm(len(selected_indices))]
-        
-        # 创建平衡的batch
-        balanced_y = y[selected_indices]
-        
-        # 创建平衡的batch数据
-        balanced_batch = type(batch)()
-        balanced_batch.data = {}
-        
-        for key, value in batch.data.items():
-            if key != 'y':  # y已经被pop出来了
-                if isinstance(value, torch.Tensor):
-                    balanced_batch.data[key] = value[selected_indices]
-                elif isinstance(value, list):
-                    balanced_batch.data[key] = [value[i] for i in selected_indices.cpu().numpy()]
-                else:
-                    # 对于其他类型，尝试索引操作
-                    try:
-                        balanced_batch.data[key] = [value[i] for i in selected_indices.cpu().numpy()]
-                    except:
-                        # 如果无法索引，保持原值
-                        balanced_batch.data[key] = value
-        
-        # 复制其他属性
-        for attr_name in dir(batch):
-            if not attr_name.startswith('_') and attr_name != 'data' and hasattr(batch, attr_name):
-                attr_value = getattr(batch, attr_name)
-                if not callable(attr_value):
-                    setattr(balanced_batch, attr_name, attr_value)
-        
-        return balanced_batch, balanced_y
-        
-    except Exception as e:
-        # 如果平衡过程出错，返回None
-        print(f"Error in balance_batch_data: {str(e)}")
-        return None
-
-class ConfidenceClassifier(nn.Module):
-    """
-    置信度分类器：将token概率分布转换为0-100的置信度预测
-    """
-    def __init__(self, vocab_size, hidden_dim=1024, num_classes=101):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.hidden_dim = hidden_dim
-        self.num_classes = num_classes  # 0-100，共101个类别
-        
-        # 更深的特征提取层，增加网络容量
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(vocab_size, hidden_dim),
-            nn.LayerNorm(hidden_dim),  # 添加层归一化
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, hidden_dim // 4),  # 增加一层
-            nn.LayerNorm(hidden_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
-        
-        # 分类器头
-        self.classifier = nn.Linear(hidden_dim // 4, num_classes)
-        
-        # 初始化权重
-        self.init_weights()
-    
-    def init_weights(self):
-        """初始化模型权重，使用更积极的初始化策略"""
-        # 初始化特征提取层 - 使用标准的Xavier初始化
-        for i, module in enumerate(self.feature_extractor):
-            if isinstance(module, nn.Linear):
-                # 使用标准的Xavier/Glorot初始化
-                nn.init.xavier_uniform_(module.weight, gain=nn.init.calculate_gain('relu'))
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        
-        # 分类器层使用He初始化，并添加小的随机偏置来打破对称性
-        nn.init.kaiming_uniform_(self.classifier.weight, mode='fan_in', nonlinearity='linear')
-        # 给偏置添加小的随机值，而不是全零，有助于打破对称性
-        nn.init.uniform_(self.classifier.bias, -0.1, 0.1)
-        
-    def forward(self, token_logits):
-        """
-        Args:
-            token_logits: [batch_size, vocab_size] - 最后一个token的logits
-        Returns:
-            confidence_logits: [batch_size, num_classes] - 置信度分类logits
-        """
-        # 检查输入是否有异常值
-        if torch.isnan(token_logits).any() or torch.isinf(token_logits).any():
-            print("Warning: NaN or Inf in input token_logits")
-            token_logits = torch.where(torch.isnan(token_logits) | torch.isinf(token_logits), 
-                                     torch.zeros_like(token_logits), token_logits)
-        
-        # 数值稳定的softmax计算
-        token_logits_clamped = torch.clamp(token_logits, min=-50, max=50)
-        token_probs = F.softmax(token_logits_clamped, dim=-1)
-        
-        # 检查概率是否有异常值
-        if torch.isnan(token_probs).any():
-            print("Warning: NaN in token_probs, using uniform distribution")
-            token_probs = torch.ones_like(token_probs) / token_probs.size(-1)
-        
-        # 特征提取
-        features = self.feature_extractor(token_probs)
-        
-        # 检查特征是否有异常值
-        if torch.isnan(features).any():
-            print("Warning: NaN in features")
-            features = torch.where(torch.isnan(features), torch.zeros_like(features), features)
-        
-        # 分类预测
-        confidence_logits = self.classifier(features)
-        
-        # 限制输出范围，防止极端值
-        confidence_logits = torch.clamp(confidence_logits, min=-10, max=10)
-        
-        return confidence_logits
-
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
@@ -300,438 +111,12 @@ def train_chat(
     best_val_loss = float("inf")
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
-    
-    # 初始化置信度分类器
-    vocab_size = len(tokenizer)
-    confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
-    
-    # 为了数值稳定性，分类器使用float32，而不是float16
-    model_dtype = next(model.parameters()).dtype
-    classifier_dtype = torch.float32  # 强制使用float32以获得更好的数值稳定性
-    confidence_classifier = confidence_classifier.to(classifier_dtype)
-    
-    confidence_classifier = confidence_classifier.to(model.device)
-    
-    accelerator.print(f"Model dtype: {model_dtype}, Classifier dtype: {classifier_dtype}")
-    
-    # 分类器优化器 - 使用更积极的学习率
-    # 给分类器设置一个更合理的学习率范围
-    min_classifier_lr = 1e-4  # 提高最小学习率
-    max_classifier_lr = 1e-3  # 设置最大学习率，防止过大
-    classifier_lr = min(max(train_config.lr * 2.0, min_classifier_lr), max_classifier_lr)  # 分类器学习率为主模型的2倍，但有上下限
-    
-    classifier_optimizer = torch.optim.AdamW(
-        confidence_classifier.parameters(), 
-        lr=classifier_lr, 
-        weight_decay=train_config.weight_decay * 0.1,  # 降低权重衰减
-        eps=1e-8,  # 增加数值稳定性
-        betas=(0.9, 0.999)
-    )
-    
-    accelerator.print(f"Classifier learning rate: {classifier_lr}")
-    accelerator.print(f"Main model learning rate: {train_config.lr}")
-    accelerator.print(f"Classifier weight decay: {train_config.weight_decay * 0.1}")
-    
-    # 分类器学习率调度器：使用带预热的余弦调度
-    from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-    
-    # 预热阶段：前10%的steps使用线性增长
-    warmup_steps = max(1, int(0.1 * train_config.num_epochs * len(train_dataloader)))
-    # 主要阶段：使用余弦衰减
-    main_steps = train_config.num_epochs * len(train_dataloader) - warmup_steps
-    
-    warmup_scheduler = LinearLR(classifier_optimizer, start_factor=0.1, total_iters=warmup_steps)
-    main_scheduler = CosineAnnealingLR(classifier_optimizer, T_max=main_steps, eta_min=classifier_lr * 0.1)
-    
-    classifier_lr_scheduler = SequentialLR(
-        classifier_optimizer, 
-        schedulers=[warmup_scheduler, main_scheduler], 
-        milestones=[warmup_steps]
-    )
-    
-    # 准备分类器参与accelerate
-    confidence_classifier, classifier_optimizer = accelerator.prepare(
-        confidence_classifier, classifier_optimizer
-    )
-    
-    accelerator.print(f"Confidence Classifier initialized with vocab_size={vocab_size}, dtype={model_dtype}")
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 80,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample": True,
-        "pad_token_id": tokenizer.eos_token_id,
-    }
-    
-    # Start the training loop
-    
-
-    for epoch in range(train_config.num_epochs):
-        current_lr = classifier_optimizer.param_groups[0]['lr']
-        accelerator.print(f"Epoch {epoch+1}/{train_config.num_epochs} - Current classifier learning rate: {current_lr:.6f}")
-        # stop when the maximum number of training steps is reached
-        if max_steps_reached:
-            break
-        epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace:  # track the memory usage
-            # 设置模型状态：LLM为eval模式（不训练），分类器为train模式
-            model.eval()  # LLM不训练，只用于推理
-            confidence_classifier.train()  # 只训练分类器
-            
-            # 冻结LLM参数
-            for param in model.parameters():
-                param.requires_grad = False
-            
-            total_loss = 0.0
-            total_length = len(train_dataloader)//gradient_accumulation_steps
-            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
-            
-            for step, batch in enumerate(pbar): 
-                total_train_steps += 1
-                # stop when the maximum number of training steps is reached
-                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
-                    max_steps_reached = True
-                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
-
-                y = batch.data.pop('y')
-
-                # LLM推理：不计算梯度
-                with torch.no_grad():
-                    with autocast():
-                        output1 = model(**batch)
-                        logits1 = output1.logits
-                        loss_con = output1.loss
-
-                # 获取最后一个token的logits，用作分类器的输入特征
-                num_token1 = logits1[:,-1,:] # [batch_size, vocab_size]
-                del logits1
-                
-                # 调试信息：检查数据类型匹配和输入特征
-                if total_train_steps == 1:  # 只在第一步打印，避免刷屏
-                    accelerator.print(f"Input dtype: {num_token1.dtype}, Classifier dtype: {next(confidence_classifier.parameters()).dtype}")
-                    accelerator.print(f"LLM requires_grad: {next(model.parameters()).requires_grad}")
-                    accelerator.print(f"Classifier requires_grad: {next(confidence_classifier.parameters()).requires_grad}")
-                    accelerator.print(f"Input token logits stats: min={num_token1.min():.4f}, max={num_token1.max():.4f}, mean={num_token1.mean():.4f}")
-                    accelerator.print(f"Input has NaN: {torch.isnan(num_token1).any()}, Input has Inf: {torch.isinf(num_token1).any()}")
-                    accelerator.print(f"Y values stats: min={y.min():.4f}, max={y.max():.4f}, mean={y.float().mean():.4f}")
-                    accelerator.print(f"Y has NaN: {torch.isnan(y).any()}")
-                    
-                    # 检查分类器权重
-                    for name, param in confidence_classifier.named_parameters():
-                        if 'classifier' in name:  # 只检查最后的分类器层
-                            accelerator.print(f"Classifier layer {name}: min={param.min():.4f}, max={param.max():.4f}, mean={param.mean():.4f}")
-                            accelerator.print(f"Classifier layer {name} has NaN: {torch.isnan(param).any()}")
-                
-                # 分类器训练：计算梯度（不使用autocast，因为分类器是float32）
-                # 将输入转换为float32以匹配分类器
-                num_token1_float32 = num_token1.detach().float()  # 转换为float32并断开梯度
-                y_float32 = y.float()  # 转换标签为float32
-                
-                # 使用分类器预测置信度
-                confidence_logits = confidence_classifier(num_token1_float32)
-                    
-                # 检查训练时的logits异常值
-                if total_train_steps <= 3:  # 只在前几步打印调试信息
-                    accelerator.print(f"Train step {total_train_steps} - Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}")
-                    accelerator.print(f"Train step {total_train_steps} - Has NaN in logits: {torch.isnan(confidence_logits).any()}")
-                
-                # 数值稳定的softmax计算
-                confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
-                confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
-                
-                # 计算预测的置信度值（期望值）
-                confidence_values = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).to(model.device)
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
-                
-                # 输出每个batch的预测置信度和真实标签（控制输出频率）
-                should_print = (total_train_steps <= 5) or (total_train_steps % 20 == 0)  # 前5步 + 每20步输出一次
-                
-                if should_print:
-                    accelerator.print(f"\n=== Step {total_train_steps} Batch Predictions ===")
-                    # 最多显示前8个样本，避免输出过长
-                    max_samples_to_show = min(8, len(predicted_confidence))
-                    for i in range(max_samples_to_show):
-                        pred_conf = predicted_confidence[i].item()
-                        true_label = y_float32[i].item()
-                        accelerator.print(f"Sample {i+1}: Predicted={pred_conf:.4f}, True={true_label:.4f}, Diff={abs(pred_conf-true_label):.4f}")
-                    
-                    if len(predicted_confidence) > max_samples_to_show:
-                        accelerator.print(f"... and {len(predicted_confidence) - max_samples_to_show} more samples")
-                    
-                    # 计算batch统计信息
-                    batch_mae = torch.mean(torch.abs(predicted_confidence - y_float32.squeeze())).item()
-                    batch_mse = torch.mean((predicted_confidence - y_float32.squeeze()) ** 2).item()
-                    accelerator.print(f"Batch Stats: MAE={batch_mae:.4f}, MSE={batch_mse:.4f}")
-                    accelerator.print(f"Pred range: [{predicted_confidence.min():.4f}, {predicted_confidence.max():.4f}]")
-                    accelerator.print(f"True range: [{y_float32.min():.4f}, {y_float32.max():.4f}]")
-                    accelerator.print("=" * 50)
-                
-                # 计算改进的损失函数（Brier Score + Diversity Loss + Focal Loss）
-                y_expanded = y_float32.expand(y_float32.shape[0], 101)  # 使用float32版本的y
-                scores = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).expand(y_float32.shape[0], 101).to(model.device)
-                squared_differences = (y_expanded - scores) ** 2
-                
-                # 1. Brier Score损失
-                brier_losses = torch.sum(confidence_probs * squared_differences, dim=1)  # [batch_size]
-                brier_loss = torch.mean(brier_losses)
-                
-                # 2. 多样性损失：鼓励批次内预测的多样性
-                batch_diversity_loss = 0.0
-                if len(predicted_confidence) > 1:
-                    # 计算预测置信度的方差，方差越大越好（多样性越高）
-                    pred_var = torch.var(predicted_confidence)
-                    # 将方差转换为损失（方差小时损失大）
-                    diversity_loss = torch.exp(-pred_var * 10)  # 10是调节因子
-                    batch_diversity_loss = diversity_loss
-                
-                # 3. Focal Loss：对于困难样本给予更多关注
-                # 计算每个类别的真实概率（one-hot编码）
-                y_indices = (y_float32.squeeze() * 100).long().clamp(0, 100)  # 转换为类别索引
-                y_one_hot = torch.zeros_like(confidence_probs)
-                y_one_hot.scatter_(1, y_indices.unsqueeze(1), 1.0)
-                
-                # Focal loss with gamma=2
-                gamma = 2.0
-                pt = torch.sum(confidence_probs * y_one_hot, dim=1)  # 真实类别的预测概率
-                focal_losses = -torch.pow(1 - pt, gamma) * torch.log(pt + 1e-8)
-                focal_loss = torch.mean(focal_losses)
-                
-                # 组合损失
-                alpha_brier = 1.0      # Brier Score权重
-                alpha_diversity = 0.1  # 多样性损失权重  
-                alpha_focal = 0.5      # Focal Loss权重
-                
-                loss_cal = (alpha_brier * brier_loss + 
-                           alpha_diversity * batch_diversity_loss + 
-                           alpha_focal * focal_loss)
-                
-                # 计算每个样本的损失（用于显示）
-                individual_losses = brier_losses  # 仍然显示Brier Score作为个体损失
-                
-                # 输出每个数据对应的损失
-                should_print_losses = (total_train_steps <= 5) or (total_train_steps % 10 == 0)  # 前5步 + 每50步输出一次
-                
-                if should_print_losses:
-                    accelerator.print(f"\n=== Step {total_train_steps} Individual Losses ===")
-                    # 最多显示前10个样本的损失，避免输出过长
-                    max_samples_to_show = min(10, len(individual_losses))
-                    for i in range(max_samples_to_show):
-                        sample_loss = individual_losses[i].item()
-                        pred_conf = predicted_confidence[i].item()
-                        true_label = y_float32[i].item()
-                        accelerator.print(f"Sample {i+1}: Loss={sample_loss:.6f}, Pred={pred_conf:.4f}, True={true_label:.4f}")
-                    
-                    if len(individual_losses) > max_samples_to_show:
-                        accelerator.print(f"... and {len(individual_losses) - max_samples_to_show} more samples")
-                    
-                    # 统计损失分布
-                    loss_min = individual_losses.min().item()
-                    loss_max = individual_losses.max().item()
-                    loss_std = individual_losses.std().item()
-                    
-                    # 显示各个损失组件
-                    accelerator.print(f"Loss Components:")
-                    accelerator.print(f"  Brier Loss: {brier_loss.item():.6f}")
-                    accelerator.print(f"  Diversity Loss: {batch_diversity_loss:.6f}")
-                    accelerator.print(f"  Focal Loss: {focal_loss.item():.6f}")
-                    accelerator.print(f"  Total Loss: {loss_cal.item():.6f}")
-                    
-                    # 统计预测多样性
-                    pred_min = predicted_confidence.min().item()
-                    pred_max = predicted_confidence.max().item()
-                    pred_std = predicted_confidence.std().item()
-                    accelerator.print(f"Prediction Stats: min={pred_min:.4f}, max={pred_max:.4f}, std={pred_std:.4f}")
-                    accelerator.print(f"Brier Loss Distribution: min={loss_min:.6f}, max={loss_max:.6f}, mean={brier_loss.item():.6f}, std={loss_std:.6f}")
-                    accelerator.print("=" * 50)
-                
-                if True:
-                    # 检查损失是否为NaN或Inf
-                    if torch.isnan(loss_cal) or torch.isinf(loss_cal):
-                        accelerator.print(f"Warning at step {total_train_steps}: Loss is NaN/Inf ({loss_cal.item()}), skipping this step")
-                        continue  # 跳过这个批次
-                    
-                    # 限制损失范围，防止极端值
-                    if loss_cal > 100:
-                        accelerator.print(f"Warning at step {total_train_steps}: Loss is very large ({loss_cal.item()}), clipping to 100")
-                        loss_cal = torch.clamp(loss_cal, max=100)
-                    
-                    # 只使用分类器损失，不使用LLM损失
-                    loss = loss_cal
-                    
-                    # 再次检查最终损失
-                    if torch.isnan(loss) or torch.isinf(loss):
-                        accelerator.print(f"Warning at step {total_train_steps}: Final loss is NaN/Inf, skipping this step")
-                        continue
-                
-                # 只对分类器进行反向传播和参数更新
-                accelerator.backward(loss)
-                
-                # 检查梯度
-                if total_train_steps <= 3:
-                    total_grad_norm = 0
-                    for name, param in confidence_classifier.named_parameters():
-                        if param.grad is not None:
-                            param_norm = param.grad.data.norm(2)
-                            total_grad_norm += param_norm.item() ** 2
-                            if torch.isnan(param.grad).any():
-                                accelerator.print(f"Warning: NaN gradient in {name}")
-                            if torch.isinf(param.grad).any():
-                                accelerator.print(f"Warning: Inf gradient in {name}")
-                    total_grad_norm = total_grad_norm ** (1. / 2)
-                    accelerator.print(f"Step {total_train_steps} - Total gradient norm: {total_grad_norm:.4f}")
-                
-                # 梯度裁剪，防止梯度爆炸
-                if hasattr(confidence_classifier, "module"):
-                    grad_norm = torch.nn.utils.clip_grad_norm_(confidence_classifier.module.parameters(), max_norm=1.0)
-                else:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(confidence_classifier.parameters(), max_norm=1.0)
-                
-                if total_train_steps <= 3:
-                    accelerator.print(f"Step {total_train_steps} - Gradient norm after clipping: {grad_norm:.4f}")
-                
-                classifier_optimizer.step()
-                
-                # 更新学习率调度器（每step调用）
-                classifier_lr_scheduler.step()
-                
-                # 检查权重更新后是否有NaN，如果有则重新初始化
-                nan_detected = False
-                for name, param in confidence_classifier.named_parameters():
-                    if torch.isnan(param).any() or torch.isinf(param).any():
-                        accelerator.print(f"Error: NaN/Inf detected in {name} after optimizer step, reinitializing...")
-                        nan_detected = True
-                        
-                        # 直接修改参数的data，而不是重新创建参数对象
-                        with torch.no_grad():
-                            if 'weight' in name:
-                                param.data.normal_(mean=0.0, std=0.01)
-                            elif 'bias' in name:
-                                param.data.fill_(0.0)
-                        
-                        # 清除该参数在优化器中的状态
-                        if param in classifier_optimizer.state:
-                            del classifier_optimizer.state[param]
-                
-                if nan_detected:
-                    accelerator.print("Parameters reinitialized and optimizer state cleaned due to NaN/Inf detection")
-                
-                classifier_optimizer.zero_grad()
-                total_loss += loss.detach().float()
-
-                if wandb_run and accelerator.is_main_process:
-                    wandb_run.log({
-                            'train/epoch': epoch + 1,
-                            'train/step': epoch * len(train_dataloader) + step,
-                            'train/loss': loss.detach().float(),
-                            'train/loss_classifier': loss_cal.detach().float()
-                        })
-
-                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (classifier loss: {loss.detach().float()})")
-
-                    # torch.cuda.empty_cache()
-
-        epoch_end_time = time.perf_counter()-epoch_start_time
-        epoch_times.append(epoch_end_time)
-        avg_loss = total_loss / len(train_dataloader)
-        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
-
-        # 注意：学习率调度器现在在每个step调用，不需要在epoch结束时调用
-        if train_config.run_validation:
-            eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
-                model,
-                train_config,
-                eval_dataloader,
-                tokenizer,
-                accelerator,
-                wandb_run,
-                confidence_classifier=confidence_classifier,
-            )
-            if True:
-                if accelerator.is_main_process:
-                    best_val_loss = eval_epoch_loss
-                if train_config.save_model and accelerator.is_main_process:
-                    # 保存分类器参数
-                    classifier_path = os.path.join(train_config.output_dir, "confidence_classifier.pt")
-                    os.makedirs(train_config.output_dir, exist_ok=True)
-                    
-                    # 获取分类器的状态字典（处理accelerate包装）
-                    if hasattr(confidence_classifier, "module"):
-                        classifier_state_dict = confidence_classifier.module.state_dict()
-                    else:
-                        classifier_state_dict = confidence_classifier.state_dict()
-                    
-                    torch.save({
-                        'model_state_dict': classifier_state_dict,
-                        'optimizer_state_dict': classifier_optimizer.state_dict() if hasattr(classifier_optimizer, 'state_dict') else None,
-                        'vocab_size': len(tokenizer),
-                        'epoch': epoch,
-                        'model_dtype': model_dtype,  # 主模型的数据类型
-                        'classifier_dtype': classifier_dtype,  # 分类器的数据类型
-                    }, classifier_path)
-                    accelerator.print(f"Confidence classifier saved to {classifier_path}")
-
-    results = None
-   
-
-    return results
-
-def train_gpt(
-    model,
-    train_dataloader,
-    eval_dataloaders_dict,  # Changed to dictionary of dataset_name -> eval_dataloader
-    test_dataloader,
-    tokenizer,
-    optimizer,
-    lr_scheduler,
-    gradient_accumulation_steps,
-    train_config,
-    accelerator,
-    wandb_run=None,
-):     
-    """
-    Trains the model on the given dataloader
-
-    Args:
-        model: The model to be trained
-        train_dataloader: The dataloader containing the training data
-        optimizer: The optimizer used for training
-        lr_scheduler: The learning rate scheduler
-        gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
-        num_epochs: The number of epochs to train for
-        local_rank: The rank of the current node in a distributed setting
-        train_config: The training configuration
-        eval_dataloader: The dataloader containing the eval data
-        tokenizer: tokenizer used in the eval for decoding the predicitons
-
-    Returns: results dictionary containing average training and validation perplexity and loss
-    """
-    # 根据是否使用混合精度来设置 autocast
-    if train_config.use_fp16 and torch.cuda.is_available():
-        autocast = torch.cuda.amp.autocast
-    else:
-        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
-
-    train_prep = []
-    train_loss = []
-    val_prep = []
-    val_loss =[]
-
-    epoch_times = []
-    checkpoint_times = []
-    results = {}
-    best_val_loss = float("inf")
-    total_train_steps = 0
-    max_steps_reached = False  # Flag to indicate max training steps reached
     # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(10)]
-    token_ids1 = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    token_ids2 = [tokenizer.encode('0', add_special_tokens=False)[0], tokenizer.eos_token_id]
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
     print("----------------------------")
-    print(token_ids1)
-    num_indices1 = torch.tensor(token_ids1).to(model.device)
-    num_indices2 = torch.tensor(token_ids2).to(model.device)
+    print(token_ids)
+    num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 80,
@@ -756,6 +141,9 @@ def train_gpt(
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
             for step, batch in enumerate(pbar): 
+                print(batch['input_ids'].size()[1])
+                if batch['input_ids'].size()[1] > 1000:
+                    continue
                 total_train_steps += 1
                 # stop when the maximum number of training steps is reached
                 if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
@@ -766,22 +154,24 @@ def train_gpt(
 
                 with autocast():
                     # get the
-                    output1 = model(**batch)
-                    logits1 = output1.logits
-                    loss_con = output1.loss
+                    output = model(**batch, output_hidden_states=True)
+                    output.hidden_states[-1]
+                    logits = output.logits
+                    loss_con = output.loss
 
-                num_token1 = logits1[:,-1,:] # get the logit of the confidence token
-                del logits1
-                scores = torch.arange(0, 1, 0.1).view(1, 10).expand(y.shape[0], 10).to(model.device)
+                num_token = logits[:,-1,:] # get the logit of the confidence token
+                del logits
+                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':
-                    num_conf1 = torch.index_select(num_token1, 1, num_indices1.squeeze(0)) # take out the logit of 0-9+1
-                    num_conf1 = F.softmax(num_conf1, dim=1)
-                    y_expanded = y.expand(y.shape[0], 10)
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
                     squared_differences = (y_expanded - scores) ** 2
-                    loss_cal = torch.mean(torch.sum(num_conf1 * squared_differences, dim=1))
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
                 elif train_config.loss_type == 'sot':
-                    norm_logit = torch.index_select(F.log_softmax(num_token1, dim=1), 1, num_indices1.squeeze(0))
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
                     smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                     smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
                     loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
@@ -805,7 +195,8 @@ def train_gpt(
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
 
-                    # torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()
+ 
 
         epoch_end_time = time.perf_counter()-epoch_start_time
         epoch_times.append(epoch_end_time)
@@ -814,6 +205,180 @@ def train_gpt(
 
         # Update the learning rate as needed
         lr_scheduler.step()
+
+        if train_config.run_validation and accelerator.is_main_process:
+            eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                model,
+                train_config,
+                eval_dataloader,
+                tokenizer,
+                accelerator,
+                wandb_run,
+            )
+            # if eval_epoch_loss < best_val_loss:
+            if True:
+                best_val_loss = eval_epoch_loss
+                if train_config.save_model and accelerator.is_main_process:
+                    if train_config.use_peft:
+                        if hasattr(model, "module"):
+                            model = model.module
+                        if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                            model = model.to(dtype=torch.float32)
+                            model = model.merge_and_unload()
+                            model = model.to(dtype=torch.float16)
+                            save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                            accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                        else:
+                            save_peft_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                    else:
+                        save_model_checkpoint(model, train_config.output_dir)
+                        accelerator.print(f"Model is saved in {train_config.output_dir} directory")
+
+    results = None
+    sys.exit(0)
+
+    return results
+
+def train_gpt(
+    model,
+    train_dataloader,
+    eval_dataloaders_dict,  # Changed to dictionary of dataset_name -> eval_dataloader
+    test_dataloader,
+    tokenizer,
+    optimizer,
+    lr_scheduler,
+    gradient_accumulation_steps,
+    train_config,
+    accelerator,
+    wandb_run=None,
+):   
+    """
+    Trains the model on the given dataloader and evaluates on 5 datasets
+
+    Args:
+        model: The model to be trained
+        train_dataloader: The dataloader containing the training data
+        eval_dataloaders_dict: Dictionary mapping dataset names to their respective eval dataloaders
+        test_dataloader: The test dataloader
+        tokenizer: The tokenizer used for processing text
+        optimizer: The optimizer used for training
+        lr_scheduler: The learning rate scheduler
+        gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
+        train_config: The training configuration
+        accelerator: The accelerator for distributed training
+        wandb_run: The wandb run object for logging
+
+    Returns: results dictionary containing average training and validation perplexity and loss
+    """
+    # 根据是否使用混合精度来设置 autocast
+    if train_config.use_fp16 and torch.cuda.is_available():
+        autocast = torch.cuda.amp.autocast
+    else:
+        autocast = contextlib.nullcontext  # 使用 nullcontext 作为默认值
+
+    train_prep = []
+    train_loss = []
+    val_prep = []
+    val_loss =[]
+
+    epoch_times = []
+    checkpoint_times = []
+    results = {}
+    best_eval_score = float(0)
+    total_train_steps = 0
+    max_steps_reached = False  # Flag to indicate max training steps reached
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    print("----------------------------")
+    print(token_ids)
+    num_indices = torch.tensor(token_ids).to(model.device)
+    generation_kwargs = {
+        "min_length": 1,
+        "max_new_tokens": 80,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "temperature": 0,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
+    
+    # Start the training loop
+    for epoch in range(train_config.num_epochs):
+        for param_group in optimizer.param_groups:
+            print(f"Current learning rate: {param_group['lr']}")
+        # stop when the maximum number of training steps is reached
+        if max_steps_reached:
+            break
+        epoch_start_time = time.perf_counter()
+        with MemoryTrace() as memtrace:  # track the memory usage
+            model.train()
+            total_loss = 0.0
+            total_length = len(train_dataloader)//gradient_accumulation_steps
+            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            for step, batch in enumerate(pbar): 
+
+                total_train_steps += 1
+                # stop when the maximum number of training steps is reached
+                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
+                    max_steps_reached = True
+                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
+
+                y = batch.data.pop('y')
+
+                with autocast():
+                    # get the
+                    output = model(**batch)
+                    logits = output.logits
+                    loss_con = output.loss
+
+                num_token = logits[:,-1,:] # get the logit of the confidence token
+                del logits
+                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += loss.detach().float()
+
+                if wandb_run and accelerator.is_main_process:
+                    wandb_run.log({
+                            'train/epoch': epoch + 1,
+                            'train/step': epoch * len(train_dataloader) + step,
+                            'train/loss': loss.detach().float(),
+                            'train/loss_con': loss_con.detach().float(),
+                            'train/loss_cal': loss_cal.detach().float()
+                        })
+
+                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
+
+                    torch.cuda.empty_cache()
+ 
+        epoch_end_time = time.perf_counter()-epoch_start_time
+        epoch_times.append(epoch_end_time)
+        avg_loss = total_loss / len(train_dataloader)
+        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
+
+        # Update the learning rate as needed
+        lr_scheduler.step()
+
         if train_config.run_validation and epoch == (train_config.num_epochs - 1):
             # Evaluate on all 5 datasets
             total_eval_score = 0.0
@@ -887,52 +452,38 @@ def train_gpt(
             train_config.dataset = original_dataset
             
             # Calculate average scores and log them
-            if accelerator.is_main_process:
+            if accelerator.is_main_process and wandb_run:
                 # Log aggregate metrics
-                if wandb_run:
-                    wandb_run.log({
-                        'eval/summary/total_score': total_eval_score,
-                    })
-                    accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
+                wandb_run.log({
+                    'eval/summary/total_score': total_eval_score,
+                })
+                accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
 
             
-
+            # Save model if validation performance improved
+            if accelerator.is_main_process:
                 if True:
                     if train_config.save_model:
                         if train_config.use_peft:
                             if hasattr(model, "module"):
                                 model = model.module
                             if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                                # 清理GPU缓存以释放内存
-                                clear_gpu_cache()
-                                try:
-                                    accelerator.print("开始合并PEFT模型...请耐心等待")
-                                    # 先转到CPU合并，减少GPU内存使用
-                                    model = model.to(dtype=torch.float32)
-                                    model = model.cpu()
-                                    model = model.merge_and_unload()
-                                    # 合并后再转回原始精度和设备
-                                    model = model.to(dtype=torch.float16)
-                                    if torch.cuda.is_available():
-                                        model = model.to("cuda")
-                                    accelerator.print("PEFT模型合并完成，开始保存...")
-                                    save_merged_checkpoint(model, tokenizer, train_config.output_dir)
-                                    accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
-                                except Exception as e:
-                                    accelerator.print(f"Error during model merge and save: {str(e)}")
+                                model = model.to(dtype=torch.float32)
+                                model = model.merge_and_unload()
+                                model = model.to(dtype=torch.float16)
+                                save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                                accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
                             else:
                                 save_peft_checkpoint(model, train_config.output_dir)
                                 accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
                         else:
                             save_model_checkpoint(model, train_config.output_dir)
                             accelerator.print(f"Model is saved in {train_config.output_dir} directory")
-                    # 移除sys.exit(0)调用
-    
+
     results = None
-   
+    sys.exit(0)
 
     return results
-
 
 def evaluation_chat(
     model,
@@ -941,8 +492,7 @@ def evaluation_chat(
     tokenizer,
     accelerator,
     wandb_run=None,
-    original=False,
-    confidence_classifier=None
+    original=False
 ):
     """
     Evaluates the model on the given dataloader
@@ -961,22 +511,13 @@ def evaluation_chat(
     val_step_loss = []
     val_step_perplexity = []
     eval_loss = 0.0  # Initialize evaluation loss
+    eval_loss_con = 0.0
     eval_loss_cal = 0.0
     total_eval_steps = 0
-    
-    # 如果没有提供分类器，创建一个默认的分类器用于评估
-    if confidence_classifier is None:
-        vocab_size = len(tokenizer)
-        confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
-        
-        # 为了数值稳定性，分类器使用float32
-        model_dtype = next(model.parameters()).dtype
-        classifier_dtype = torch.float32
-        confidence_classifier = confidence_classifier.to(classifier_dtype)
-        
-        confidence_classifier = confidence_classifier.to(model.device)
-        accelerator.print("Warning: Using default classifier for evaluation")
-        accelerator.print(f"Model dtype: {model_dtype}, Classifier dtype: {classifier_dtype}")
+    # Get the ids of the numbers from 0 to 100
+    numbers = [str(i) for i in range(101)]
+    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
         "min_length": 1,
         "max_new_tokens": 100,
@@ -990,87 +531,54 @@ def evaluation_chat(
     }
     with torch.no_grad():
         model.eval()
-        confidence_classifier.eval()  # 确保分类器也在eval模式
-        
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
-            
-            # LLM推理：不计算梯度
             output = model(**batch)
             logits = output.logits
+            loss_con = output.loss
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-            
-            # 将输入转换为float32以匹配分类器
-            num_token_float32 = num_token.float()  # 转换为float32
-            y_float32 = y.float()  # 转换标签为float32
-            
-            # 使用分类器预测置信度
-            confidence_logits = confidence_classifier(num_token_float32)  # [batch_size, 101]
-            
-            # 检查logits是否有异常值
-            if step == 0:  # 只在第一步打印调试信息
-                print(f"Confidence logits stats: min={confidence_logits.min():.4f}, max={confidence_logits.max():.4f}, mean={confidence_logits.mean():.4f}")
-                print(f"Has NaN in logits: {torch.isnan(confidence_logits).any()}")
-                print(f"Has Inf in logits: {torch.isinf(confidence_logits).any()}")
-            
-            # 数值稳定的softmax计算
-            confidence_logits = torch.clamp(confidence_logits, min=-50, max=50)  # 限制logits范围
-            confidence_probs = F.softmax(confidence_logits, dim=1)  # [batch_size, 101]
-            
-            # 检查概率是否有异常值
-            if step == 0:
-                print(f"Confidence probs stats: min={confidence_probs.min():.4f}, max={confidence_probs.max():.4f}, sum={confidence_probs.sum(dim=1).mean():.4f}")
-                print(f"Has NaN in probs: {torch.isnan(confidence_probs).any()}")
-            
-            # 创建置信度值数组 [0.00, 0.01, 0.02, ..., 1.00] - 使用float32
-            confidence_values = torch.arange(0, 1.01, 0.01, dtype=torch.float32).view(1, 101).to(model.device)  # [1, 101]
-            
-            # 计算期望的置信度预测值
-            predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)  # [batch_size]
-            
-            # 检查预测置信度是否有异常值
-            if step == 0:
-                print(f"Predicted confidence stats: min={predicted_confidence.min():.4f}, max={predicted_confidence.max():.4f}, mean={predicted_confidence.mean():.4f}")
-                print(f"Has NaN in predicted confidence: {torch.isnan(predicted_confidence).any()}")
-            
-            # 处理NaN值：如果有NaN，替换为0.5（中性置信度）
-            if torch.isnan(predicted_confidence).any():
-                print(f"Warning: Found NaN in predicted confidence, replacing with 0.5")
-                predicted_confidence = torch.where(torch.isnan(predicted_confidence), 
-                                                 torch.tensor(0.5, device=predicted_confidence.device, dtype=predicted_confidence.dtype), 
-                                                 predicted_confidence)
-            
-            # 计算Brier Score损失（只针对分类器）- 使用float32
-            squared_differences = (predicted_confidence - y_float32.squeeze()) ** 2
-            loss_cal = torch.mean(squared_differences)
-            
-            # 只使用分类器损失
-            loss = loss_cal
-            
+            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+
+            if train_config.loss_type == 'brier':
+                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                num_conf = F.softmax(num_conf, dim=1)
+                # compute the loss
+                y_expanded = y.expand(y.shape[0], 101)
+                squared_differences = (y_expanded - scores) ** 2
+                loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+            elif train_config.loss_type == 'sot':
+                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
             if train_config.save_metrics:
                 val_step_loss.append(loss.detach().float().item())
                 val_step_perplexity.append(float(torch.exp(loss.detach().float())))
 
-            print(f"classifier loss: {loss_cal:.4f}") 
-               
-            eval_loss += loss.detach().float()
-            eval_loss_cal += loss_cal.detach().float()
+            if train_config.add_loss_con:
+                loss = loss_con + loss_cal
+            else:
+                loss = loss_cal
             
-            # 预测置信度：使用期望值（与训练时一致）
-            probs = predicted_confidence  # 已经是0-1范围的置信度
-
+            eval_loss += loss.detach().float()
+            eval_loss_con += loss_con.detach().float()
+            eval_loss_cal += loss_cal.detach().float()
+            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            # TODO:
+            # probs, y = accelerator.gather_for_metrics((probs, y))
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
     total_num = len(all_y)
-
+    
     # 收集所有设备上的数据
     gathered_all_y = all_y
     gathered_eval_probs = eval_probs
 
     # 计算平均损失和困惑度
     eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
     eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
@@ -1107,7 +615,8 @@ def evaluation_chat(
             wandb_run.log({
                 'eval/perplexity': eval_ppl,
                 'eval/loss': eval_epoch_loss,
-                'eval/loss_classifier': eval_epoch_loss_cal,
+                'eval/loss_con': eval_epoch_loss_con,
+                'eval/loss_cal': eval_epoch_loss_cal,
                 'eval/ece': ece_score,
                 'eval/roc_auc': roc_auc_score,
             }, commit=False)
@@ -1232,48 +741,251 @@ def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wan
 
     return ece_score, roc_auc_score
 
-def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, classifier_path=None):
+def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     """
-    Evaluates the model using VLLM and classifier for confidence prediction
+    Evaluates the model on the given dataloader
 
     Args:
-        train_config: training configuration
-        test_dataset: test dataset 
-        tokenizer: tokenizer for the model
-        wandb_run: wandb run for logging
-        original: whether to use original model
-        classifier_path: path to confidence classifier checkpoint
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
 
-    Returns: ece_score, roc_auc_score, acc2_score
+    Returns: eval_ppl, eval_epoch_loss
     """
-    from transformers import AutoModelForCausalLM
-    
     all_y = []
     test_probs = []
-    all_responses = []
+    test_probs_stage1 = []
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=train_config.seed,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
     
-    # 加载分类器（如果提供路径）
-    confidence_classifier = None
-    if classifier_path and os.path.exists(classifier_path):
-        # 加载模型用于获取logits
-        model = AutoModelForCausalLM.from_pretrained(
-            train_config.model_name if original else train_config.output_dir,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        model.eval()
-        
-        # 获取模型的数据类型
-        model_dtype = next(model.parameters()).dtype
-        confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=model_dtype)
-        confidence_classifier.eval()
-        print(f"Loaded confidence classifier from {classifier_path}")
-        print("Using classifier for confidence prediction")
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    if train_config.test_linguistic:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    elif train_config.test_correct:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_correct(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     else:
-        print("No classifier provided, using original confidence extraction method")
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score, val_metrics['acc2']
+
+
+def test_implicit(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader
+
+    Args:
+        model: The model to evaluate
+        eval_dataloader: The dataloader containing the evaluation data
+        local_rank: The rank of the current node in a distributed setting
+        tokenizer: The tokenizer used to decode predictions
+
+    Returns: eval_ppl, eval_epoch_loss
+    """
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=train_config.seed,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
     
-    # 使用VLLM生成回答
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_implicit(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score, val_metrics['acc2']
+
+
+def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+    original = True
+    # Initialize OpenAI client
+    try:
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+            api_version=os.environ['OPENAI_API_VERSION'],
+            azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+        )
+    except:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+        )
+    # Create a wandb table for logging
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    
+    # Process prompts
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+
+    # Generate responses using OpenAI API
+    outputs = []
+    for prompt in prompts:
+        try:
+            response = client.chat.completions.create(
+                model=os.environ['OPENAI_DEPLOYMENT_NAME'],
+                messages=prompt,
+                temperature=train_config.temperature,
+                max_tokens=400,
+                top_p=1.0,
+                n=1
+            )
+            outputs.append(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error generating response: {e}")
+            outputs.append("")
+    
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_gpt(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=False)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Log to wandb
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    # Compute metrics
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'gpt/number_{train_config.dataset}': number,
+                        f'gpt/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'gpt/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'gpt/ece_{train_config.dataset}': ece_score,
+                        f'gpt/auroc_{train_config.dataset}': roc_auc_score,
+                        f'gpt/score_{train_config.dataset}': score,
+                    }, commit=False)
+    prompts2 = []
+    for prompt, response in zip(prompts, responses):
+        prompt[2]['content'] += (' ' + response)
+        prompts2.append(prompt)
+    
+    original = False
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
@@ -1281,178 +993,131 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False, 
         seed=42,
         disable_log_stats=True,
         trust_remote_code=True,
-        gpu_memory_utilization=0.85,  # 降低一点以留出内存给分类器
+        gpu_memory_utilization=0.95,
         enforce_eager=True,
     )
     sampling_params = SamplingParams(
-        n=1,
-        temperature=train_config.temperature,
-        top_k=-1,
-        top_p=1.0,
-        max_tokens=400
-    )
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
 
-    wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    confidences = []
+    import re
+    for output in outputs:
+        percent_str = output.outputs[0].text
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            confidences.append(percent)
+        else:
+            # 处理无效值（例如设为 0 或记录警告）
+            confidences.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    val_metrics = compute_conf_metrics(y, confidences, len(prompts2))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
+
+
+def test_cross(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    
+    llm = LLM(
+        model=train_config.model_name,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    
-    
-    # 处理每个回答以获取置信度标签
-    responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(
-        test_dataset['question'], outputs, test_dataset['correct_answer'], 
-        dataset_name=train_config.dataset, vllm=True
-    )
-    
-    if confidence_classifier is not None and len(responses_filtered) > 0:
-        print("Using classifier to predict confidence...")
-        
-        # 为带有置信度问题的回答重新获取logits
-        batch_size = 8
-        classifier_confidences = []
-        
-        with torch.no_grad():
-            for i in tqdm(range(0, len(responses_filtered), batch_size), desc="Classifier inference"):
-                batch_end = min(i + batch_size, len(responses_filtered))
-                batch_prompts = responses_filtered[i:batch_end]
-                
-                # 构建带有置信度问题的prompts
-                confidence_prompts = []
-                for j, response in enumerate(batch_prompts):
-                    # 获取对应的问题和回答
-                    question = questions[i+j] if i+j < len(questions) else ""
-                    
-                    # 构建置信度问题的prompt
-                    confidence_prompt = [
-                        {"role": "user", "content": question},
-                        {"role": "assistant", "content": f"{response}\n\nHow confident are you in this answer? Please provide a confidence level from 0 to 100: "}
-                    ]
-                    confidence_prompts.append(confidence_prompt)
-                
-                # Tokenize
-                query_tensors = tokenizer.apply_chat_template(
-                    confidence_prompts,
-                    tokenize=True,
-                    padding="longest",
-                    padding_side='left',
-                    truncation=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    continue_final_message=True
-                ).to(model.device)
-                
-                # 添加空格token
-                white_spaces = torch.full((len(confidence_prompts), 1), 220).to(model.device)
-                white_attention = torch.full((len(confidence_prompts), 1), 1).to(model.device)
-                query_tensors['input_ids'] = torch.cat([query_tensors['input_ids'], white_spaces], dim=1)
-                query_tensors['attention_mask'] = torch.cat([query_tensors['attention_mask'], white_attention], dim=1)
-                
-                # 获取logits
-                logits = model(**query_tensors).logits
-                
-                # 使用分类器预测置信度
-                num_token = logits[:, -1, :]  # [batch_size, vocab_size]
-                confidence_logits = confidence_classifier(num_token)  # [batch_size, 101]
-                
-                # 计算期望置信度
-                confidence_probs = F.softmax(confidence_logits, dim=1)
-                confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
-                
-                classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
-        
-        # 使用分类器的置信度预测
-        out_confidences = classifier_confidences
-        print(f"Generated {len(out_confidences)} confidence predictions using classifier")
-        
-    else:
-        # 使用原始的置信度提取方法
-        out_confidences = confidence_stage1
-        print("Using original confidence extraction method")
-    
-    # 记录到wandb表格 - 从outputs提取文本
-    responses = [output.outputs[0].text for output in outputs]
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table.add_data(response, confidence, y_item)
-    
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
     if wandb_run:
-        if original:
+        if original == True:
             wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
         else:
-            classifier_suffix = "_classifier" if confidence_classifier is not None else ""
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned{classifier_suffix}": wan_table})
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
 
-    # 计算指标
-    if len(y) == 0:
-        print("No valid samples for evaluation")
-        return None, None, None
-    
     number = len(y)
     print(f"Number: {number}")
     val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
-    
     if train_config.use_wandb:
-        method_name = "classifier" if confidence_classifier is not None else "stage1"
-        plot_confidence_histogram(
-            y, out_confidences, method_name, 
-            val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], 
-            wandb_run, original, train_config.dataset, use_annotation=True
-        )
-        plot_ece_diagram(y, out_confidences, method_name, wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
-    acc2_score = val_metrics['acc2']
-    score = 3 * acc2_score + 2 * roc_auc_score - ece_score
-    
-    print(f"Results ({'Classifier' if confidence_classifier else 'Original'}):")
-    print(f"  ECE: {ece_score:.4f}")
-    print(f"  ROC-AUC: {roc_auc_score:.4f}")
-    print(f"  Accuracy: {acc2_score:.4f}")
-    print(f"  Score: {score:.4f}")
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
     if wandb_run:
-        method_suffix = "_classifier" if confidence_classifier is not None else ""
         wandb_run.log({
-            f'test/number_{train_config.dataset}{method_suffix}': number,
-            f'test/acc_{train_config.dataset}{method_suffix}': val_metrics['acc'],
-            f'test/acc2_{train_config.dataset}{method_suffix}': acc2_score,
-            f'test/ece_{train_config.dataset}{method_suffix}': ece_score,
-            f'test/auroc_{train_config.dataset}{method_suffix}': roc_auc_score,
-            f'test/score_{train_config.dataset}{method_suffix}': score,
-        }, commit=False)
-
-    return ece_score, roc_auc_score, acc2_score
-
-def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=False, classifier_path=None):
-    from transformers import AutoModelForCausalLM
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
+    del llm
+    prompts2 = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for prompt, response in zip(prompts, out_response_cleans):
+        prompt[2]['content'] += response
+        prompts2.append(prompt)
     
-    all_y = []
-    test_probs = []
-    all_responses = []
-    
-    # 加载分类器（如果提供路径）
-    confidence_classifier = None
-    if classifier_path and os.path.exists(classifier_path):
-        # 加载模型用于获取logits
-        model = AutoModelForCausalLM.from_pretrained(
-            train_config.model_name if original else train_config.output_dir,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        model.eval()
-        
-        # 获取模型的数据类型
-        model_dtype = next(model.parameters()).dtype
-        confidence_classifier, _ = load_confidence_classifier(classifier_path, device='cuda', dtype=model_dtype)
-        confidence_classifier.eval()
-        print(f"Loaded confidence classifier from {classifier_path}")
-        print("Using classifier for confidence prediction")
-    else:
-        print("No classifier provided, using original confidence extraction method")
-    
-    # 使用VLLM生成回答
+    original = False
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
         tensor_parallel_size=1,
@@ -1460,140 +1125,441 @@ def test_classifier(train_config, test_dataset, tokenizer, wandb_run, original=F
         seed=42,
         disable_log_stats=True,
         trust_remote_code=True,
-        gpu_memory_utilization=0.85,  # 降低一点以留出内存给分类器
+        gpu_memory_utilization=0.95,
         enforce_eager=True,
     )
     sampling_params = SamplingParams(
-        n=1,
-        temperature=train_config.temperature,
-        top_k=-1,
-        top_p=1.0,
-        max_tokens=400,
-        logprobs=len(tokenizer)  # 返回所有vocab的log probabilities
-    )
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
 
-    wan_table = wandb.Table(columns=['response', 'confidence', 'y'])
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    confidences = []
+    import re
+    for output in outputs:
+        percent_str = output.outputs[0].text
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            confidences.append(percent)
+        else:
+            # 处理无效值（例如设为 0 或记录警告）
+            confidences.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    val_metrics = compute_conf_metrics(y, confidences, len(prompts2))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
+
+
+def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
+
+            Here is the example:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
+            Confidence: 90%
+            """
+    original = True
+    llm = LLM(
+        model=train_config.model_name,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
     prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
-    
-    
-    # 处理每个回答以获取置信度标签
-    responses_filtered, out_response_cleans, questions, confidence_stage1, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(
-        test_dataset['question'], outputs, test_dataset['correct_answer'], 
-        dataset_name=train_config.dataset, vllm=True
-    )
-    
-    if confidence_classifier is not None and len(responses_filtered) > 0:
-        print("Using classifier to predict confidence...")
-        
-        # 为带有置信度问题的回答重新获取logits
-        batch_size = 8
-        classifier_confidences = []
-        
-        with torch.no_grad():
-            # 分批处理以避免内存问题
-            for i in range(0, len(out_response_cleans), batch_size):
-                batch_end = min(i + batch_size, len(out_response_cleans))
-                batch_responses = out_response_cleans[i:batch_end]
-                
-                # 构建置信度问题的prompts
-                confidence_prompts = []
-                for j, response in enumerate(batch_responses):
-                    prompt_tmp = json.loads(test_dataset["prompt"][i+j])
-                    prompt_tmp[2]['content'] += response
-                    confidence_prompt = prompt_tmp
-                    confidence_prompts.append(confidence_prompt)
-                
-                # 使用原始model进行推理获取logits
-                tokenized_prompts = tokenizer.apply_chat_template(
-                    confidence_prompts, 
-                    tokenize=True, 
-                    padding="longest", 
-                    padding_side='left', 
-                    truncation=True, 
-                    return_dict=True, 
-                    return_tensors="pt", 
-                    continue_final_message=True
-                ).to(model.device)
-                
-                # 使用原始model获取最后一个token的logits
-                model_outputs = model(**tokenized_prompts)
-                logits = model_outputs.logits[:, -1, :]  # [batch_size, vocab_size] - 最后一个token的logits
-                
-                # 使用分类器预测置信度
-                confidence_logits = confidence_classifier(logits)  # [batch_size, 101]
-                
-                # 计算期望置信度
-                confidence_probs = F.softmax(confidence_logits, dim=1)
-                confidence_values = torch.arange(0, 1.01, 0.01).view(1, 101).to(model.device)
-                predicted_confidence = torch.sum(confidence_probs * confidence_values, dim=1)
-                
-                classifier_confidences.extend(predicted_confidence.detach().cpu().numpy().tolist())
-        
-        # 使用分类器的置信度预测
-        out_confidences = classifier_confidences
-        print(f"Generated {len(out_confidences)} confidence predictions using classifier")
-        
-    else:
-        # 使用原始的置信度提取方法
-        out_confidences = confidence_stage1
-        print("Using original confidence extraction method")
-    
-    # 记录到wandb表格 - 从outputs提取文本
-    responses = [output.outputs[0].text for output in outputs]
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
-        wan_table.add_data(response, confidence, y_item)
-    
-    if wandb_run:
-        if original:
-            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
-        else:
-            classifier_suffix = "_classifier" if confidence_classifier is not None else ""
-            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned{classifier_suffix}": wan_table})
+        wan_table.add_data(response, confidence, y_item)        
 
-    # 计算指标
-    if len(y) == 0:
-        print("No valid samples for evaluation")
-        return None, None, None
-    
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+
     number = len(y)
     print(f"Number: {number}")
     val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
-    
     if train_config.use_wandb:
-        method_name = "classifier" if confidence_classifier is not None else "stage1"
-        plot_confidence_histogram(
-            y, out_confidences, method_name, 
-            val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], 
-            wandb_run, original, train_config.dataset, use_annotation=True
-        )
-        plot_ece_diagram(y, out_confidences, method_name, wandb_run, original, train_config.dataset)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
-    acc2_score = val_metrics['acc2']
-    score = 3 * acc2_score + 2 * roc_auc_score - ece_score
-    
-    print(f"Results ({'Classifier' if confidence_classifier else 'Original'}):")
-    print(f"  ECE: {ece_score:.4f}")
-    print(f"  ROC-AUC: {roc_auc_score:.4f}")
-    print(f"  Accuracy: {acc2_score:.4f}")
-    print(f"  Score: {score:.4f}")
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
     if wandb_run:
-        method_suffix = "_classifier" if confidence_classifier is not None else ""
         wandb_run.log({
-            f'test/number_{train_config.dataset}{method_suffix}': number,
-            f'test/acc_{train_config.dataset}{method_suffix}': val_metrics['acc'],
-            f'test/acc2_{train_config.dataset}{method_suffix}': acc2_score,
-            f'test/ece_{train_config.dataset}{method_suffix}': ece_score,
-            f'test/auroc_{train_config.dataset}{method_suffix}': roc_auc_score,
-            f'test/score_{train_config.dataset}{method_suffix}': score,
-        }, commit=False)
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
+    del llm
+    original = False
+    prompts2 = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
+        if confidence < 0.5:
+            prompt[0]['content'] = reflection_prompt
+            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+            prompt[2]['content'] = 'Reflection: The response is '
+            prompts2.append(prompt)
+        else:
+            prompts2.append(prompt)
+    
+    wan_table2 = wandb.Table(columns=['response','confidence', 'y'])
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
 
-    return ece_score, roc_auc_score, acc2_score
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table2.add_data(response, confidence, y_item)        
 
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table2})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts)) 
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
+
+
+def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API with different numbers of low-confidence samples
+    being regenerated by GPT. Optimized to call the API only once for the maximum sample count.
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
+
+            Here is the example:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
+            Confidence: 90%
+            """
+    original = True
+    llm = LLM(
+        model=train_config.model_name,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses_stage1, out_response_cleans_stage1, questions_stage1, out_confidences_stage1, y_stage1, y_None_stage1, confidences_None_stage1, correct_answer_cleans_stage1 = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses_stage1, confidences_None_stage1, y_None_stage1):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score for stage 1
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+
+    number = len(y_stage1)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y_stage1, out_confidences_stage1, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y_stage1, out_confidences_stage1, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y_stage1, out_confidences_stage1, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
+    del llm
+    
+    # 获取所有样本的置信度和对应的索引
+    confidence_with_indices = [(conf, i) for i, conf in enumerate(out_confidences_stage1)]
+    # 按置信度升序排序
+    confidence_with_indices.sort(key=lambda x: x[0])
+    
+    # 定义要测试的样本数量
+    sample_counts = [10, 50, 80, 100, 200, 300, 400]
+    # 确保最大数量不超过总样本数
+    max_count = min(max(sample_counts), len(confidence_with_indices))
+    original = False
+    
+    # 创建一个表格来存储不同样本数量的指标
+    metrics_table = wandb.Table(columns=["sample_count", "acc", "acc2", "ece", "auroc", "score"])
+    
+    # 只生成一次最大数量的样本
+    print(f"\n===== Generating responses for {max_count} lowest confidence samples =====")
+    
+    # 选择置信度最低的指定数量样本的索引
+    lowest_conf_indices = [idx for _, idx in confidence_with_indices[:max_count]]
+    
+    # 为置信度最低的样本准备提示
+    prompts_low_conf = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for idx in lowest_conf_indices:
+        prompt = prompts[idx].copy()
+        # prompt[0]['content'] = reflection_prompt
+        # prompt[1]['content'] += ('\nResponse:' + out_response_cleans_stage1[idx] + str(int(out_confidences_stage1[idx] * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+        # prompt[2]['content'] = 'Reflection: The response is '
+        prompts_low_conf.append(prompt)
+    
+    # 使用GPT API生成置信度低的样本的新回答
+    gpt_responses = []
+    gpt_confidences = []
+    gpt_y = []
+    
+    # 调用GPT API生成置信度最低的样本的新回答
+    if prompts_low_conf:
+        try:
+            from openai import AzureOpenAI
+            client = AzureOpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+                api_version=os.environ['OPENAI_API_VERSION'],
+                azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+            )
+        except:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+            )
+        
+        outputs_low_conf = []
+        for i, prompt in enumerate(prompts_low_conf):
+            try:
+                print(f"Generating response for sample {i+1}/{len(prompts_low_conf)}")
+                response = client.chat.completions.create(
+                    model=os.environ.get('OPENAI_DEPLOYMENT_NAME'),
+                    messages=prompt,
+                    temperature=train_config.temperature,
+                    max_tokens=400,
+                    top_p=1.0,
+                    n=1
+                )
+                outputs_low_conf.append(response.choices[0].message.content)
+            except Exception as e:
+                print(f"Error generating response with GPT API: {e}")
+                outputs_low_conf.append("")
+        
+        # 提取低置信度样本对应的问题和正确答案
+        questions_low_conf = [test_dataset['question'][idx] for idx in lowest_conf_indices]
+        correct_answers_low_conf = [test_dataset['correct_answer'][idx] for idx in lowest_conf_indices]
+        
+        # 处理GPT生成的结果
+        responses_stage2, out_response_cleans_stage2, questions_stage2, out_confidences_stage2, y_stage2, y_None_stage2, confidences_None_stage2, correct_answer_cleans_stage2 = confidence_replace_gpt(questions_low_conf, outputs_low_conf, correct_answers_low_conf, dataset_name=train_config.dataset, vllm=False)
+        
+        # 存储GPT生成的结果
+        for i in range(len(responses_stage2)):
+            gpt_responses.append(responses_stage2[i])
+            gpt_confidences.append(out_confidences_stage2[i])
+            gpt_y.append(y_stage2[i])
+    
+    # 为每个样本数量进行评估
+    for count in sample_counts:
+        # 确保样本数量不超过总样本数和最大生成数量
+        actual_count = min(count, max_count, len(confidence_with_indices))
+        print(f"\n===== Evaluating with {actual_count} lowest confidence samples =====")
+        
+        # 选择置信度最低的指定数量样本的索引
+        current_lowest_indices = [idx for _, idx in confidence_with_indices[:actual_count]]
+        # 其余样本的索引
+        other_indices = [idx for idx in range(len(out_confidences_stage1)) if idx not in lowest_conf_indices[:actual_count]]
+        
+        # 创建一个表格记录当前样本数量的结果
+        wan_table2 = wandb.Table(columns=['response', 'confidence', 'y', 'source'])
+        
+        # 记录两个阶段的所有结果
+        final_responses = []
+        final_confidences = []
+        final_y = []
+        
+        # 首先添加其他样本的原始结果
+        for idx in other_indices:
+            final_responses.append(responses_stage1[idx])
+            final_confidences.append(out_confidences_stage1[idx])
+            final_y.append(y_stage1[idx])
+            # wan_table2.add_data(responses_stage1[idx], confidences_None_stage1[idx], y_None_stage1[idx], "stage1-original")
+        
+        # 添加GPT生成的结果（仅使用当前样本数量对应的部分）
+        for i in range(min(actual_count, len(gpt_responses))):
+            final_responses.append(gpt_responses[i])
+            final_confidences.append(gpt_confidences[i])
+            final_y.append(gpt_y[i])
+            # wan_table2.add_data(gpt_responses[i], gpt_confidences[i], gpt_y[i], "stage2-gpt")
+        
+        # 记录这个特定样本数量的结果
+        # wandb_run.log({f"Testing_{train_config.dataset}/samples_{actual_count}": wan_table2})
+
+        # 计算合并后的指标
+        val_metrics = compute_conf_metrics(final_y, final_confidences, len(final_y))
+        
+        # 可视化合并后的结果
+        if train_config.use_wandb:
+            plot_confidence_histogram(final_y, final_confidences, f"combined_{actual_count}", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+            plot_ece_diagram(final_y, final_confidences, f"combined_{actual_count}", wandb_run, original, train_config.dataset)
+
+        # 计算最终分数
+        ece_score = val_metrics['ece']
+        roc_auc_score = val_metrics['auroc']
+        score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+        # 记录这个样本数量的指标
+        metrics_dict = {
+            f'test_{actual_count}/number_{train_config.dataset}': len(final_y),
+            f'test_{actual_count}/acc_{train_config.dataset}': val_metrics['acc'],
+            f'test_{actual_count}/acc2_{train_config.dataset}': val_metrics['acc2'],
+            f'test_{actual_count}/ece_{train_config.dataset}': ece_score,
+            f'test_{actual_count}/auroc_{train_config.dataset}': roc_auc_score,
+            f'test_{actual_count}/score_{train_config.dataset}': score,
+            f'test_{actual_count}/low_conf_count': actual_count,
+            f'test_{actual_count}/high_conf_count': len(other_indices),
+        }
+        wandb_run.log(metrics_dict, commit=False)
+        
+        # 将指标添加到汇总表格
+        metrics_table.add_data(actual_count, val_metrics['acc'], val_metrics['acc2'], ece_score, roc_auc_score, score)
+        
+        # 打印此次评估的指标
+        print(f"Sample count: {actual_count}")
+        print(f"Accuracy: {val_metrics['acc']:.4f}")
+        print(f"Accuracy (correct with conf): {val_metrics['acc2']:.4f}")
+        print(f"ECE: {ece_score:.4f}")
+        print(f"AUROC: {roc_auc_score:.4f}")
+        print(f"Score: {score:.4f}")
+    
+    # 记录汇总表格
+    wandb_run.log({f"metrics_summary_{train_config.dataset}": metrics_table})
+    
+    # 打印不同修改数目对应的准确率汇总表格
+    print("\n====== 不同修改数目对应的指标汇总 ======")
+    print("| 修改样本数 | Accuracy | Accuracy2 | ECE  | AUROC | 总分数 |")
+    print("|------------|----------|-----------|------|-------|--------|")
+    for count, acc, acc2, ece, auroc, score in metrics_table.data:
+        print(f"| {count:10d} | {acc:.4f}  | {acc2:.4f}   | {ece:.4f} | {auroc:.4f} | {score:.4f} |")
+    print("================================================")
+    
+    # 返回最后一次评估的结果
+    return final_responses
 
 
 def freeze_transformer_layers(model, num_layer):
@@ -1746,58 +1712,3 @@ def save_to_json(output_filename, train_step_loss, train_epoch_loss, train_step_
     }
     with open(output_filename, "w") as f:
         json.dump(metrics_data, f)
-
-def load_confidence_classifier(checkpoint_path, device='cuda', dtype=None):
-    """
-    加载保存的置信度分类器
-    
-    Args:
-        checkpoint_path: 分类器检查点路径
-        device: 设备类型
-        dtype: 数据类型，如果为None则使用保存时的类型
-    
-    Returns:
-        confidence_classifier: 加载的分类器模型
-        checkpoint_info: 检查点信息字典
-    """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    vocab_size = checkpoint['vocab_size']
-    confidence_classifier = ConfidenceClassifier(vocab_size=vocab_size)
-    confidence_classifier.load_state_dict(checkpoint['model_state_dict'])
-    confidence_classifier.to(device)
-    
-    # 使用保存时的数据类型，如果没有指定的话
-    if dtype is None:
-        dtype = checkpoint.get('classifier_dtype', torch.float32)  # 默认为float32
-    
-    confidence_classifier = confidence_classifier.to(dtype)
-    
-    # 检查加载的权重是否有异常值并重新初始化
-    for name, param in confidence_classifier.named_parameters():
-        if torch.isnan(param).any() or torch.isinf(param).any():
-            print(f"Warning: Found NaN/Inf in parameter {name}, reinitializing...")
-            with torch.no_grad():
-                if 'weight' in name:
-                    fan_in = param.size(1) if param.dim() > 1 else param.size(0)
-                    fan_out = param.size(0)
-                    std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.01
-                    param.data.normal_(mean=0.0, std=std)
-                elif 'bias' in name:
-                    param.data.fill_(0.0)
-    
-    checkpoint_info = {
-        'epoch': checkpoint.get('epoch', -1),
-        'vocab_size': vocab_size,
-        'model_dtype': checkpoint.get('model_dtype', torch.float16),
-        'classifier_dtype': checkpoint.get('classifier_dtype', torch.float32)
-    }
-    
-    print(f"Loaded confidence classifier from {checkpoint_path}")
-    print(f"  - Vocab size: {vocab_size}")
-    print(f"  - Epoch: {checkpoint_info['epoch']}")
-    print(f"  - Device: {device}")
-    print(f"  - Classifier dtype: {dtype}")
-    print(f"  - Model dtype: {checkpoint_info['model_dtype']}")
-    
-    return confidence_classifier, checkpoint_info
