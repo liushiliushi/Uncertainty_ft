@@ -156,7 +156,7 @@ def train_chat(
                 output = model(**batch, output_hidden_states=True)
                 hidden = output.hidden_states[-1]
                 hidden = hidden[:,-1,:]
-                logits = classifier(hidden)
+                num_token = model.lm_head(hidden)
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':
