@@ -179,7 +179,6 @@ def train_chat(
                 scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
                 if train_config.loss_type == 'brier':
-                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
                     num_conf = F.softmax(num_conf, dim=1)
                     # compute the loss
                     y_expanded = y.expand(y.shape[0], 101)
