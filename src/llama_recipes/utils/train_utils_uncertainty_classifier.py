@@ -563,24 +563,24 @@ def evaluation_chat(
     }
     with torch.no_grad():
         model.eval()
+        confidence_classifier.eval()  # 设置classifier为评估模式
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
             y = batch.data.pop('y')
-            output = model(**batch)
-            logits = output.logits
+            output = model(**batch, output_hidden_states=True)
+            hidden = output.hidden_states[-1]
+            hidden = hidden[:,-1,:]  # 获取最后一个token的hidden state
             loss_con = output.loss
-            num_token = logits[:,-1,:] # get the logit of the confidence token
-            del logits
+            num_token = confidence_classifier(hidden)  # 使用classifier获取置信度logits
             scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
+                num_conf = F.softmax(num_token, dim=1)  # num_token已经是101维的logits
                 # compute the loss
                 y_expanded = y.expand(y.shape[0], 101)
                 squared_differences = (y_expanded - scores) ** 2
                 loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
             elif train_config.loss_type == 'sot':
-                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                norm_logit = F.log_softmax(num_token, dim=1)  # 直接使用101维的logits
                 smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
                 smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
                 loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
@@ -596,7 +596,7 @@ def evaluation_chat(
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            probs = 0.01 * torch.argmax(num_token, dim=1)  # 直接从101维logits计算概率
             # TODO:
             # probs, y = accelerator.gather_for_metrics((probs, y))
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
