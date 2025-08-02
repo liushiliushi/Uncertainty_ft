@@ -30,11 +30,8 @@ from llama_recipes.utils.config_utils import (
 )
 from llama_recipes.utils.dataset_utils import get_preprocessed_dataset2
 from llama_recipes.utils.train_utils_uncertainty_classifier import (
-    train_chat,
-    test_vllm,
     clear_gpu_cache,
     print_model_size,
-    get_policies,
 )
 from warnings import warn
 import sys
@@ -47,8 +44,15 @@ def setup_wandb(train_config, **kwargs):
             "You are trying to use wandb which is not currently installed. "
             "Please install it using pip install wandb"
         )
-    from llama_recipes.configs import wandb_config as WANDB_CONFIG
-    wandb_config = WANDB_CONFIG()
+    if "Ministral" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_mini as WANDB_CONFIG_MINI
+        wandb_config = WANDB_CONFIG_MINI()
+    elif "Qwen" in train_config.model_name:
+        from llama_recipes.configs import wandb_config_qwen as WANDB_CONFIG_QWEN
+        wandb_config = WANDB_CONFIG_QWEN()
+    else:
+        from llama_recipes.configs import wandb_config_llama as WANDB_CONFIG_Llama
+        wandb_config = WANDB_CONFIG_Llama()
     update_config(wandb_config, **kwargs)
     init_dict = dataclasses.asdict(wandb_config)
     run = wandb.init(**init_dict)
@@ -94,19 +98,14 @@ def main(**kwargs):
 
     # 加载 tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
-        train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name, 
+        train_config.model_name,
         padding_side='left'
     )
-    print(tokenizer.pad_token_id)
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # 准备数据集
     dataset_train = get_preprocessed_dataset2(tokenizer, 'train', train_config).shuffle(seed=42)
     accelerator.print(f"--> Training Set Length = {len(dataset_train)}")
-
-    dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
-    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
-    accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
 
     # 若使用 packing strategy
     if train_config.batching_strategy == "packing":
@@ -129,39 +128,71 @@ def main(**kwargs):
             **train_dl_kwargs,
         )
 
+    dataset_test = get_preprocessed_dataset2(tokenizer, 'test', train_config)
     test_dataloader = torch.utils.data.DataLoader(
         dataset_test,
         num_workers=0,
         batch_size=train_config.batch_size_testing
     )
 
-    eval_dataloader = None
     if train_config.run_validation:
-        if train_config.batching_strategy == "packing":
-            dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
-        val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
-        eval_dataloader = torch.utils.data.DataLoader(
-            dataset_val,
-            num_workers=train_config.num_workers_dataloader,
-            pin_memory=True,
-            **val_dl_kwargs,
-        )
-        if len(eval_dataloader) == 0:
-            raise ValueError("Validation set size too small to form a single batch.")
+        if train_config.train_gpt:
+            eval_dataloaders_dict = {}
+            eval_datasets = ['hotpot_qa', 'trivia_qa', 'gsm8k_dataset', 'truthful_qa', 'strategy_qa']
+            original_dataset = train_config.dataset
+            for dataset_name in eval_datasets:
+                train_config.dataset = dataset_name     
+                dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
+                if train_config.batching_strategy == "packing":
+                    dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
+                val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
+                eval_dataloader = torch.utils.data.DataLoader(
+                    dataset_val,
+                    num_workers=train_config.num_workers_dataloader,
+                    pin_memory=True,
+                    **val_dl_kwargs,
+                )
+                accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
 
-    # if train_config.test_original_model:
-    #     accelerator.print("==============original test================")
-    #     test_vllm(train_config, dataset_test, tokenizer, wandb_run, original=True)
-
+                if len(eval_dataloader) == 0:
+                    raise ValueError("Validation set size too small to form a single batch.")
+                eval_dataloaders_dict[dataset_name] = eval_dataloader   
+            train_config.dataset = original_dataset
+        else:
+            dataset_val = get_preprocessed_dataset2(tokenizer, 'val', train_config)
+            if train_config.batching_strategy == "packing":
+                dataset_val = ConcatDataset2(dataset_val, chunk_size=train_config.context_length)
+            val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
+            eval_dataloader = torch.utils.data.DataLoader(
+                dataset_val,
+                num_workers=train_config.num_workers_dataloader,
+                pin_memory=True,
+                **val_dl_kwargs,
+            )
+            accelerator.print(f"--> Validation Set Length = {len(dataset_val)}")
+            if len(eval_dataloader) == 0:
+                raise ValueError("Validation set size too small to form a single batch.")
 
     # 加载/初始化模型
-    model = AutoModelForCausalLM.from_pretrained(
-        train_config.model_name, 
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.float16,
-        quantization_config=bnb_config,
-        device_map=None
-    )
+    use_cache = None  # accelerate 下不需要专门设置
+    # 加载/初始化模型
+    if "Llama-3.1" in train_config.model_name:
+        model = LlamaForCausalLM.from_pretrained(
+            train_config.model_name,
+            quantization_config=bnb_config,
+            use_cache=use_cache,
+            attn_implementation="sdpa" if train_config.use_fast_kernels else None,
+            device_map=None,  # accelerate 内部会处理
+            torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            train_config.model_name, 
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            quantization_config=bnb_config,
+            device_map=None
+        )
 
     # embedding resize
     if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
@@ -191,33 +222,87 @@ def main(**kwargs):
     elif torch.cuda.is_available():
         model.to("cuda")
 
-    # 创建一个虚拟优化器，因为train_chat函数需要这个参数，但实际不会用到
-    # 真正的分类器优化器会在train_chat函数内部创建
-    dummy_optimizer = optim.AdamW([torch.tensor(0.0)], lr=1e-8)  # 虚拟参数和极小学习率
-    dummy_scheduler = StepLR(dummy_optimizer, step_size=1, gamma=1.0)
+    optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+    scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
 
-    model, dummy_optimizer, train_dataloader = accelerator.prepare(
-        model, dummy_optimizer, train_dataloader, 
+    model, optimizer, train_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, 
     )
-    if eval_dataloader is not None:
+    if train_config.run_validation and train_config.train_gpt:
+        for dataset_name in eval_dataloaders_dict:
+            eval_dataloaders_dict[dataset_name] = accelerator.prepare(eval_dataloaders_dict[dataset_name])
+    else:
         eval_dataloader = accelerator.prepare(eval_dataloader)
 
     clear_gpu_cache()  # 清理一次缓存
 
     # 开始训练
-    results = train_chat(
-        model,
-        train_dataloader,
-        eval_dataloader,
-        dataset_test,
-        tokenizer,
-        dummy_optimizer,  # 这个不会被用到
-        dummy_scheduler,   # 这个不会被用到
-        train_config.gradient_accumulation_steps,
-        train_config,
-        accelerator,         # 传入 accelerator
-        wandb_run,
-    )
+    if train_config.train_coarse:
+        from llama_recipes.utils.train_utils_uncertainty_coarse import (
+            train_chat,
+            train_gpt
+        )
+        if train_config.train_gpt:
+            results = train_gpt(
+                model,
+                train_dataloader,
+                eval_dataloaders_dict,  # Pass dictionary of dataloaders
+                test_dataloader,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
+        else:
+            results = train_chat(
+                model,
+                train_dataloader,
+                eval_dataloader,
+                dataset_test,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
+    else:
+        from llama_recipes.utils.train_utils_uncertainty_classifier import (
+            train_chat,
+            train_gpt
+        )
+        if train_config.train_gpt:
+            results = train_gpt(
+            model,
+            train_dataloader,
+            eval_dataloaders_dict,  # Pass dictionary of dataloaders
+            test_dataloader,
+            tokenizer,
+            optimizer,
+            scheduler,
+            train_config.gradient_accumulation_steps,
+            train_config,
+            accelerator,         # 传入 accelerator
+            wandb_run,
+        )
+        else:
+            results = train_chat(
+                model,
+                train_dataloader,
+                eval_dataloader,
+                dataset_test,
+                tokenizer,
+                optimizer,
+                scheduler,
+                train_config.gradient_accumulation_steps,
+                train_config,
+                accelerator,         # 传入 accelerator
+                wandb_run,
+            )
     print("training ended")
     sys.exit(0)
 

@@ -136,6 +136,7 @@ def train_chat(
             break
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
+            trans = model.lm_head
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
@@ -155,9 +156,8 @@ def train_chat(
                 with autocast():
                     # get the
                     output = model(**batch, output_hidden_states=True)
-                    output.hidden_states[-1]
-                    logits = output.logits
-                    loss_con = output.loss
+                    hidden = output.hidden_states[-1]
+
 
                 num_token = logits[:,-1,:] # get the logit of the confidence token
                 del logits
