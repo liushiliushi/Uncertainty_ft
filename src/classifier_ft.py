@@ -233,13 +233,12 @@ def main(**kwargs):
     
     # 根据配置选择优化器的参数
     if train_config.train_model_with_classifier:
-        # 同时训练模型和分类器的参数
-        trainable_params = list(model.parameters()) + list(confidence_classifier.parameters())
+        optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+
     else:
-        # 只训练分类器的参数
-        trainable_params = confidence_classifier.parameters()
+        optimizer = optim.AdamW(classifier.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+
     
-    optimizer = optim.AdamW(trainable_params, lr=train_config.lr, weight_decay=train_config.weight_decay)
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     
     # Start the training loop
