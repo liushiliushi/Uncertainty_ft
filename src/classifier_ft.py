@@ -239,7 +239,7 @@ def main(**kwargs):
     )
     if True:
             eval_dataloaders_dict = {}
-            eval_datasets = ['trivia_qa', 'gsm8k_dataset']
+            eval_datasets = ['trivia_qa', 'hotpot_qa', 'gsm8k_dataset']
             original_dataset = train_config.dataset
             for dataset_name in eval_datasets:
                 train_config.dataset = dataset_name     
