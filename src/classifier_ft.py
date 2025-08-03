@@ -229,7 +229,7 @@ def main(**kwargs):
     print("----------------------------")
     print(token_ids)
     num_indices = torch.tensor(token_ids).to(model.device)
-    confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices).to(model.device)
+    confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices, train_config.classifier_init_from_lm_head).to(model.device)
     
     # 根据配置选择优化器的参数
     if train_config.train_model_with_classifier:

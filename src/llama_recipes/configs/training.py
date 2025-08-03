@@ -67,3 +67,4 @@ class train_config:
     train_gpt: bool = False # Enable validation on multiple datasets (5 datasets) during training
     train_model_with_classifier: bool = False # Whether to train the model parameters along with the classifier
     train_only_last_layers: int = 0 # When training with classifier, only train the last N layers of the model (0 means all layers)
+    classifier_init_from_lm_head: bool = True # Whether to initialize the confidence classifier from lm_head weights (True) or randomly (False)

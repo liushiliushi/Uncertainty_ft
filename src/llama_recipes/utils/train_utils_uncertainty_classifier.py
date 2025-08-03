@@ -34,20 +34,22 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
 
 import torch.nn as nn
 class ConfidenceClassifier(nn.Module):
-    def __init__(self, lm_head, token_indices):
+    def __init__(self, lm_head, token_indices, init_from_lm_head=True):
         super().__init__()
-        # 提取0-100对应token的权重作为初始化
-        selected_weights = lm_head.weight
-        selected_bias = lm_head.bias if lm_head.bias is not None else None 
         
         # 创建新的线性层
         self.classifier = nn.Linear(lm_head.in_features, lm_head.out_features, bias=(lm_head.bias is not None))
         
-        # 用选中的权重初始化
-        with torch.no_grad():
-            self.classifier.weight.data = selected_weights
-            if selected_bias is not None:
-                self.classifier.bias.data = selected_bias
+        if init_from_lm_head:
+            # 用lm_head的权重初始化
+            selected_weights = lm_head.weight
+            selected_bias = lm_head.bias if lm_head.bias is not None else None 
+            
+            with torch.no_grad():
+                self.classifier.weight.data = selected_weights
+                if selected_bias is not None:
+                    self.classifier.bias.data = selected_bias
+        # 如果init_from_lm_head=False，则使用PyTorch的默认随机初始化
     
     def forward(self, hidden_states):
         return self.classifier(hidden_states)
