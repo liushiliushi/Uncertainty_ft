@@ -231,6 +231,10 @@ def main(**kwargs):
     num_indices = torch.tensor(token_ids).to(model.device)
     confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices, train_config.classifier_init_from_lm_head).to(model.device)
     
+    # 确保分类器与模型使用相同的数据类型
+    model_dtype = next(model.parameters()).dtype
+    confidence_classifier = confidence_classifier.to(dtype=model_dtype)
+    
     # 根据配置选择优化器的参数
     if train_config.train_model_with_classifier:
         optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
