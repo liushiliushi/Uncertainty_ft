@@ -236,7 +236,7 @@ def main(**kwargs):
         optimizer = optim.AdamW(model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
 
     else:
-        optimizer = optim.AdamW(classifier.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+        optimizer = optim.AdamW(confidence_classifier.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
 
     
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
