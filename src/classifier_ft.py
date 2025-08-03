@@ -139,7 +139,7 @@ def main(**kwargs):
     if train_config.run_validation:
         if train_config.train_gpt:
             eval_dataloaders_dict = {}
-            eval_datasets = ['hotpot_qa', 'trivia_qa', 'gsm8k_dataset', 'truthful_qa', 'strategy_qa']
+            eval_datasets = ['hotpot_qa', 'trivia_qa', 'gsm8k_dataset']
             original_dataset = train_config.dataset
             for dataset_name in eval_datasets:
                 train_config.dataset = dataset_name     
@@ -230,7 +230,16 @@ def main(**kwargs):
     print(token_ids)
     num_indices = torch.tensor(token_ids).to(model.device)
     confidence_classifier = ConfidenceClassifier(model.lm_head, num_indices).to(model.device)
-    optimizer = optim.AdamW(confidence_classifier.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay)
+    
+    # 根据配置选择优化器的参数
+    if train_config.train_model_with_classifier:
+        # 同时训练模型和分类器的参数
+        trainable_params = list(model.parameters()) + list(confidence_classifier.parameters())
+    else:
+        # 只训练分类器的参数
+        trainable_params = confidence_classifier.parameters()
+    
+    optimizer = optim.AdamW(trainable_params, lr=train_config.lr, weight_decay=train_config.weight_decay)
     scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     
     # Start the training loop

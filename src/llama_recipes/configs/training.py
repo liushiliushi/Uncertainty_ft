@@ -65,3 +65,4 @@ class train_config:
     test_correct: bool = False
     train_coarse: bool = False
     train_gpt: bool = False # Enable validation on multiple datasets (5 datasets) during training
+    train_model_with_classifier: bool = False # Whether to train the model parameters along with the classifier

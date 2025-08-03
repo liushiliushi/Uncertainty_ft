@@ -114,10 +114,15 @@ def train_chat(
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
-    # 冻结模型参数，只训练classifier
-    print("Freezing model parameters...")
-    for param in model.parameters():
-        param.requires_grad = False
+    # 根据配置决定是否冻结模型参数
+    if train_config.train_model_with_classifier:
+        print("Training both model and classifier parameters...")
+        for param in model.parameters():
+            param.requires_grad = True
+    else:
+        print("Freezing model parameters, only training classifier...")
+        for param in model.parameters():
+            param.requires_grad = False
     
     print("Ensuring classifier parameters are trainable...")
     for param in confidence_classifier.parameters():
@@ -169,8 +174,11 @@ def train_chat(
             break
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
-            model.eval()  # 模型设为eval模式，不训练
-            confidence_classifier.train()  # 只有classifier处于训练模式
+            if train_config.train_model_with_classifier:
+                model.train()  # 同时训练model和classifier时，model也要进入训练模式
+            else:
+                model.eval()  # 只训练classifier时，model设为eval模式
+            confidence_classifier.train()  # classifier处于训练模式
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
             pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
