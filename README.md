@@ -1,6 +1,6 @@
 # Uncertainty Fine-tuning for Language Models
 
-This repository contains code for fine-tuning language models with uncertainty estimation capabilities. It supports multiple base models including Llama-3.1, Mistral, and Qwen.
+This is the official repository for *ConfTuner: Training Large Language Models to Express Their Confidence Verbally*. It supports multiple base models including Llama-3.1, Mistral, and Qwen.
 
 ## Setups
 
