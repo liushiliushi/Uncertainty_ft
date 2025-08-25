@@ -4,7 +4,7 @@
 import torch
 
 from llama_recipes.data.concatenator import ConcatDataset
-from llama_recipes.datasets2 import DATASET_PREPROC, DATASET_RAW, get_custom_dataset
+from llama_recipes.datasets2 import DATASET_PREPROC, DATASET_RAW, DATASET_REFLECTION
 from llama_recipes.utils.config_utils import get_dataloader_kwargs
 
 
@@ -28,17 +28,33 @@ def get_preprocessed_dataset(
     )
 
 def get_preprocessed_dataset2(
-    tokenizer, dataset, split, on_policy
+    tokenizer, split, train_config
 ) -> torch.utils.data.Dataset:
-    return DATASET_PREPROC[dataset](
-            tokenizer, split, on_policy
+    return DATASET_PREPROC[train_config.dataset](
+            tokenizer, split, train_config
         )
 
-def get_raw_dataset(
-    tokenizer, dataset, split
+
+
+def get_dataset_reflection(
+    tokenizer, split, train_config
 ) -> torch.utils.data.Dataset:
-    return DATASET_RAW[dataset](
-            tokenizer, split
+    return DATASET_REFLECTION[train_config.dataset](
+            tokenizer, split, 
+        )
+def get_dataset_cons(
+    tokenizer, dataset, split, vllm
+) -> torch.utils.data.Dataset:
+    return DATASET_CONS[dataset](
+            tokenizer, split, vllm
+        )
+
+
+def get_raw_dataset(
+    tokenizer, train_config, split
+) -> torch.utils.data.Dataset:
+    return DATASET_RAW[train_config.dataset](
+            tokenizer, split, train_config
         )
 
 

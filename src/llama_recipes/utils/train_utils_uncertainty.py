@@ -13,48 +13,40 @@ import contextlib
 import torch
 import torch.cuda.nccl as nccl
 import torch.distributed as dist
-from torch.distributed.fsdp import StateDictType
-from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+import sys
 from tqdm import tqdm
 from transformers import LlamaTokenizer
 import json
 import torch.nn.functional as F
 import wandb
 
-from llama_recipes.model_checkpointing import save_fsdp_model_checkpoint_full, save_model_and_optimizer_sharded, save_optimizer_checkpoint, save_peft_checkpoint, save_model_checkpoint, save_merged_checkpoint
+from llama_recipes.model_checkpointing import save_peft_checkpoint, save_model_checkpoint, save_merged_checkpoint
 from llama_recipes.policies import fpSixteen,bfSixteen, get_llama_wrapper
 from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
 from llama_recipes.utils.compute_metrics import compute_conf_metrics, plot_confidence_histogram, plot_ece_diagram
-from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace
+from llama_recipes.utils.postprocess import postprocess_extract, confidence_replace, confidence_replace_3level, confidence_replace_gpt,confidence_replace_correct
 from vllm import LLM, SamplingParams
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
 
 @contextlib.contextmanager
-def profile(cfg, local_rank=None):
+def profile(cfg, accelerator=None):
     use_profiler: bool = cfg.use_profiler
     use_flop_counter: bool = cfg.flop_counter
     if use_flop_counter and use_profiler:
-        raise ValueError("Cannot use both profiler and flop counter")
+        raise ValueError("Cannot use both profiler and flop counter simultaneously.")
+
     if use_profiler:
-        # profiler needs a warmup stage to get the accurate profiling results
         wait_step, warmup_step, active_step = 1, 2, 3
-        min_step = wait_step + warmup_step + active_step + 1
-        if cfg.max_train_step > 0 and cfg.max_train_step < min_step:
-            raise ValueError(f"pytorch profiler requires at least {min_step} train steps to finish the warm-up and recording stage, {wait_step} for wait_step, {warmup_step} for warmup_step, {active_step} for profiling step, please increase the max_train_step, current max_train_step {cfg.max_train_step}")
-        print(f"pytorch profiling is activated and results will be saved in {cfg.profiler_dir}")
         with torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA,
-            ],
-            schedule=torch.profiler.schedule(wait=wait_step, warmup=warmup_step, active=active_step, repeat=1),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                cfg.profiler_dir
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=wait_step, warmup=warmup_step, active=active_step, repeat=1
             ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(cfg.profiler_dir),
             profile_memory=True,
             with_stack=False,
             with_flops=True,
@@ -62,16 +54,26 @@ def profile(cfg, local_rank=None):
         ) as torch_profiler:
             yield torch_profiler
     elif use_flop_counter:
-        if cfg.max_train_step > 0 and cfg.max_train_step <= cfg.flop_counter_start:
-            raise ValueError(f"flop counter requires at least {cfg.flop_counter_start + 1} train steps, please increase the max_train_step, current max_train_step {cfg.max_train_step}")
-        with FlopMeasure(rank=local_rank,warmup_step=cfg.flop_counter_start) as flop_counter:
+        warmup_step = cfg.flop_counter_start
+        # If you want to distinguish rank in multi-card, you can use accelerator.process_index
+        with FlopMeasure(rank=0, warmup_step=warmup_step) as flop_counter:
             yield flop_counter
     else:
-        torch_profiler = contextlib.nullcontext()
         yield None
 
-
-def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
+def train_chat(
+    model,
+    train_dataloader,
+    eval_dataloader,
+    test_dataloader,
+    tokenizer,
+    optimizer,
+    lr_scheduler,
+    gradient_accumulation_steps,
+    train_config,
+    accelerator,
+    wandb_run=None,
+):   
     """
     Trains the model on the given dataloader
 
@@ -89,30 +91,15 @@ def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, o
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
-    # Create a gradient scaler for fp16
-    if train_config.use_fp16 and train_config.enable_fsdp:
-        scaler = ShardedGradScaler()
-    elif train_config.use_fp16 and not train_config.enable_fsdp:
-        scaler = torch.cuda.amp.GradScaler()
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
+    if train_config.use_fp16 and torch.cuda.is_available():
+        autocast = torch.cuda.amp.autocast
+    else:
+        autocast = contextlib.nullcontext 
 
-
-
-    autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
     train_loss = []
     val_prep = []
     val_loss =[]
-
-    if train_config.save_metrics:
-        if not os.path.exists(train_config.output_dir):
-            os.makedirs(train_config.output_dir, exist_ok=True)
-        metrics_filename = f"{train_config.output_dir}/metrics_data_{local_rank}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
-        train_step_perplexity = []
-        train_step_loss = []
-        val_step_loss = []
-        val_step_perplexity = []
 
     epoch_times = []
     checkpoint_times = []
@@ -123,315 +110,8 @@ def train(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, o
     # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
-
-    # Start the training loop
-    for epoch in range(train_config.num_epochs):
-        for param_group in optimizer.param_groups:
-            print(f"Current learning rate: {param_group['lr']}")
-        # stop when the maximum number of training steps is reached
-        if max_steps_reached:
-            break
-        epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace:  # track the memory usage
-            model.train()
-            total_loss = 0.0
-            total_length = len(train_dataloader)//gradient_accumulation_steps
-            pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            with profile(train_config,local_rank) as profile_context:
-                for step, batch in enumerate(train_dataloader):
-                    total_train_steps += 1
-                    # stop when the maximum number of training steps is reached
-                    if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
-                        max_steps_reached = True
-                        if not train_config.enable_fsdp or local_rank==0:
-                            print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
-                        break
-
-                    batch.data.pop('labels')
-                    for key in batch.keys():
-                        if train_config.enable_fsdp:
-                            if is_xpu_available():
-                                batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
-                            else:
-                                batch[key] = batch[key].to(local_rank)
-                        else:
-
-                            if is_xpu_available():
-                                batch[key] = batch[key].to('xpu:0')
-                            else:
-                                batch[key] = batch[key].to(model.device)
-
-                    y = batch.data.pop('y')
-                    with autocast():
-                        # get the
-                        logits = model(**batch).logits
-
-
-                    probabilities = F.softmax(logits, dim=-1)
-                    decoded_indices = torch.argmax(probabilities, dim=-1)
-                    decoded_indices = decoded_indices.tolist()
-                    decoded_texts = [tokenizer.decode(indices[-1], skip_special_tokens=True) for indices in decoded_indices]
-
-                    num_token = logits[:,-1,:] # get the logit of the confidence token
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(logits.shape[0], 101).to(model.device)
-
-                    if train_config.loss_type == 'brier':
-                        num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                        num_conf = F.softmax(num_conf, dim=1)
-                        # compute the loss
-                        y_expanded = y.expand(logits.shape[0], 101)
-                        squared_differences = (y_expanded - scores) ** 2
-                        loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
-                    elif train_config.loss_type == 'sot':
-                        norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                        smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                        smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                        loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
-
-                    #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
-                    # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    print(f"loss: {loss}")
-                    loss = loss / gradient_accumulation_steps
-                    if train_config.save_metrics:
-                        train_step_loss.append(loss.detach().float().item())
-                        train_step_perplexity.append(float(torch.exp(loss.detach().float())))
-                    total_loss += loss.detach().float()
-                    if train_config.use_fp16:
-                        # if fp16 is enabled, use gradient scaler to handle gradient update
-                        scaler.scale(loss).backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                scaler.unscale_(optimizer)
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            scaler.step(optimizer)
-                            scaler.update()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    else:
-                        # regular backpropagation when fp16 is not used
-                        loss.backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    if train_config.use_profiler or train_config.flop_counter:
-                        profile_context.step()
-                    if train_config.flop_counter and profile_context.is_done():
-                        TFlops = profile_context.get_flops_per_sec() / 1e12
-                    if wandb_run:
-                        if not train_config.enable_fsdp or rank==0:
-                            wandb_run.log({
-                                'train/epoch': epoch + 1,
-                                'train/step': epoch * len(train_dataloader) + step,
-                                'train/loss': loss.detach().float(),
-                            })
-
-                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
-
-                    if train_config.save_metrics:
-                        save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
-                # pbar.close()
-
-        epoch_end_time = time.perf_counter()-epoch_start_time
-        epoch_times.append(epoch_end_time)
-        # Reducing total_loss across all devices if there's more than one CUDA device
-        if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        elif torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        train_epoch_loss = total_loss / len(train_dataloader)
-        if train_config.enable_fsdp:
-            train_epoch_loss = train_epoch_loss/world_size
-        train_perplexity = torch.exp(train_epoch_loss)
-
-        train_prep.append(float(train_perplexity))
-        train_loss.append(float(train_epoch_loss))
-
-        if not train_config.enable_fsdp or rank==0:
-            memtrace.print_stats()
-
-        # Update the learning rate as needed
-        lr_scheduler.step()
-
-
-        if train_config.run_validation:
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-            if train_config.save_metrics:
-                val_step_loss.extend(temp_val_loss)
-                val_step_perplexity.extend(temp_step_perplexity)
-
-            checkpoint_start_time = time.perf_counter()
-            if train_config.save_model and eval_epoch_loss < best_val_loss:
-                if train_config.enable_fsdp:
-                    dist.barrier()
-                if train_config.use_peft:
-                    if train_config.enable_fsdp:
-                        if rank==0:
-                            print(f"we are about to save the PEFT modules")
-                    else:
-                        print(f"we are about to save the PEFT modules")
-                    if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                        model = model.merge_and_unload()
-                        save_merged_checkpoint(model, tokenizer, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"Merged modules are saved in {train_config.output_dir} directory")
-                        else:
-                            print(f"Merged modules are saved in {train_config.output_dir} directory")
-                        
-                    else:
-                        save_peft_checkpoint(model, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"PEFT modules are saved in {train_config.output_dir} directory")
-                        else:
-                            print(f"PEFT modules are saved in {train_config.output_dir} directory")
-
-                else:
-                    if not train_config.enable_fsdp:
-                        save_model_checkpoint(model, train_config.output_dir)
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.FULL_STATE_DICT:
-                        print(" Saving the FSDP model checkpoint using FULL_STATE_DICT")
-                        print("=====================================================")
-                        save_fsdp_model_checkpoint_full(
-                            model, optimizer, rank, train_config, epoch=epoch
-                        )
-                        
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP optimizer using FULL_STATE_DICT")
-                            print("=====================================================")
-                            save_optimizer_checkpoint(
-                                model, optimizer, rank, train_config, epoch=epoch
-                            )
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.SHARDED_STATE_DICT:
-
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer)
-                        else:
-                            print(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config)
-
-                        
-                if train_config.enable_fsdp:
-                    dist.barrier()
-            checkpoint_end_time = time.perf_counter() - checkpoint_start_time
-            checkpoint_times.append(checkpoint_end_time)
-            if eval_epoch_loss < best_val_loss:
-                best_val_loss = eval_epoch_loss
-                if train_config.enable_fsdp:
-                    if rank==0:
-                        print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-                else:
-                    print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-            val_loss.append(float(best_val_loss))
-            val_prep.append(float(eval_ppl))
-        if train_config.enable_fsdp:
-            if rank==0:
-                print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
-        else:
-            print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
-
-        # Saving the results every epoch to plot later
-        if train_config.save_metrics:
-            save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
-
-    # eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
-    avg_epoch_time = sum(epoch_times)/ len(epoch_times)
-    avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
-    avg_train_prep = sum(train_prep)/len(train_prep)
-    avg_train_loss = sum(train_loss)/len(train_loss)
-    if train_config.run_validation:
-        avg_eval_prep = sum(val_prep)/len(val_prep)
-        avg_eval_loss = sum(val_loss)/len(val_loss)
-
-    results['avg_train_prep'] = avg_train_prep
-    results['avg_train_loss'] = avg_train_loss
-    if train_config.run_validation:
-        results['avg_eval_prep'] = avg_eval_prep
-        results['avg_eval_loss'] = avg_eval_loss
-    results["avg_epoch_time"] = avg_epoch_time
-    results["avg_checkpoint_time"] = avg_checkpoint_time
-    if train_config.save_metrics:
-        results["metrics_filename"] = metrics_filename
-    if train_config.flop_counter:
-        results["model_tflops"]= TFlops
-    #saving the training params including fsdp setting for reference.
-    if train_config.enable_fsdp and not train_config.use_peft and rank==0:
-        save_train_params(train_config, fsdp_config, rank)
-
-    return results
-
-
-def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
-    """
-    Trains the model on the given dataloader
-
-    Args:
-        model: The model to be trained
-        train_dataloader: The dataloader containing the training data
-        optimizer: The optimizer used for training
-        lr_scheduler: The learning rate scheduler
-        gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
-        num_epochs: The number of epochs to train for
-        local_rank: The rank of the current node in a distributed setting
-        train_config: The training configuration
-        eval_dataloader: The dataloader containing the eval data
-        tokenizer: tokenizer used in the eval for decoding the predicitons
-
-    Returns: results dictionary containing average training and validation perplexity and loss
-    """
-    # Create a gradient scaler for fp16
-    if train_config.use_fp16 and train_config.enable_fsdp:
-        scaler = ShardedGradScaler()
-    elif train_config.use_fp16 and not train_config.enable_fsdp:
-        scaler = torch.cuda.amp.GradScaler()
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
-
-    if train_config.test_original_model == True:
-        print("==============original evaluation================")
-        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = True)
-        print("==============original test2stage================")
-        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original = True)
-
-    autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
-    train_prep = []
-    train_loss = []
-    val_prep = []
-    val_loss =[]
-
-    if train_config.save_metrics:
-        if not os.path.exists(train_config.output_dir):
-            os.makedirs(train_config.output_dir, exist_ok=True)
-        metrics_filename = f"{train_config.output_dir}/metrics_data_{local_rank}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
-        train_step_perplexity = []
-        train_step_loss = []
-        val_step_loss = []
-        val_step_perplexity = []
-
-    epoch_times = []
-    checkpoint_times = []
-    results = {}
-    best_val_loss = float("inf")
-    total_train_steps = 0
-    max_steps_reached = False  # Flag to indicate max training steps reached
-    # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    print("----------------------------")
+    print(token_ids)
     num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
         "min_length": 1,
@@ -455,330 +135,168 @@ def train_chat(model, train_dataloader,eval_dataloader, test_dataloader, tokeniz
             model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
-            pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            with profile(train_config,local_rank) as profile_context:
-                for step, batch in enumerate(train_dataloader): 
-                    # TODO
-                    if batch['input_ids'].shape[1] > 800:
-                        continue
-                    total_train_steps += 1
-                    # stop when the maximum number of training steps is reached
-                    if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
-                        max_steps_reached = True
-                        if not train_config.enable_fsdp or local_rank==0:
-                            print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
-                        break
+            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            for step, batch in enumerate(pbar): 
+                total_train_steps += 1
+                # stop when the maximum number of training steps is reached
+                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
+                    max_steps_reached = True
+                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
 
-                    # batch.pop('labels')
-                    for key in batch.keys():
-                        if train_config.enable_fsdp:
-                            if is_xpu_available():
-                                batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
-                            else:
-                                batch[key] = batch[key].to(model.device) # TODO
-                        else:
+                y = batch.data.pop('y')
 
-                            if is_xpu_available():
-                                batch[key] = batch[key].to('xpu:0')
-                            else:
-                                batch[key] = batch[key].to(model.device)
+                with autocast():
+                    # get the
+                    output = model(**batch)
+                    logits = output.logits
+                    loss_con = output.loss
 
-                    y = batch.data.pop('y')
+                num_token = logits[:,-1,:] # get the logit of the confidence token
+                del logits
+                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
-                    with autocast():
-                        # get the
-                        output = model(**batch)
-                        logits = output.logits
-                        loss_con = output.loss
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += loss.detach().float()
 
-                    num_token = logits[:,-1,:] # get the logit of the confidence token
-                    del logits
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
-
-                    if train_config.loss_type == 'brier':
-                        num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                        num_conf = F.softmax(num_conf, dim=1)
-                        # compute the loss
-                        y_expanded = y.expand(y.shape[0], 101)
-                        squared_differences = (y_expanded - scores) ** 2
-                        loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
-                    elif train_config.loss_type == 'sot':
-                        norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                        smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                        smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                        loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
-
-                    #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
-                    # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    if train_config.add_loss_con:
-                        loss = loss_con + loss_cal
-                    else:
-                        loss = loss_cal
-                    print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}")
-                    loss = loss / gradient_accumulation_steps
-                    if train_config.save_metrics:
-                        train_step_loss.append(loss.detach().float().item())
-                        train_step_perplexity.append(float(torch.exp(loss.detach().float())))
-                    total_loss += loss.detach().float()
-                    if train_config.use_fp16:
-                        # if fp16 is enabled, use gradient scaler to handle gradient update
-                        scaler.scale(loss).backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                scaler.unscale_(optimizer)
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            scaler.step(optimizer)
-                            scaler.update()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    else:
-                        # regular backpropagation when fp16 is not used
-                        loss.backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    # TODO
-                    # if train_config.use_profiler or train_config.flop_counter:
-                    #     profile_context.step()
-                    # if train_config.flop_counter and profile_context.is_done():
-                    #     TFlops = profile_context.get_flops_per_sec() / 1e12
-                    if wandb_run:
-                        if not train_config.enable_fsdp or rank==0:
-                            wandb_run.log({
-                                'train/epoch': epoch + 1,
-                                'train/step': epoch * len(train_dataloader) + step,
-                                'train/loss': loss.detach().float(),
-                                'train/loss_con': loss_con.detach().float(),
+                if wandb_run and accelerator.is_main_process:
+                    wandb_run.log({
+                            'train/epoch': epoch + 1,
+                            'train/step': epoch * len(train_dataloader) + step,
+                            'train/loss': loss.detach().float(),
+                            'train/loss_con': loss_con.detach().float(),
                                 'train/loss_cal': loss_cal.detach().float()
-                            })
+                        })
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
 
-                    if train_config.save_metrics:
-                        save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
                     torch.cuda.empty_cache()
  
 
         epoch_end_time = time.perf_counter()-epoch_start_time
         epoch_times.append(epoch_end_time)
-        # Reducing total_loss across all devices if there's more than one CUDA device
-        if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        elif torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        train_epoch_loss = total_loss / len(train_dataloader)
-        if train_config.enable_fsdp:
-            train_epoch_loss = train_epoch_loss/world_size
-        train_perplexity = torch.exp(train_epoch_loss)
-
-        train_prep.append(float(train_perplexity))
-        train_loss.append(float(train_epoch_loss))
-
-        # TODO
-        # if not train_config.enable_fsdp or rank==0:
-        #     memtrace.print_stats()
+        avg_loss = total_loss / len(train_dataloader)
+        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
 
         # Update the learning rate as needed
         lr_scheduler.step()
 
-
-        if train_config.run_validation:
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-            if train_config.save_metrics:
-                val_step_loss.extend(temp_val_loss)
-                val_step_perplexity.extend(temp_step_perplexity)
-
-            checkpoint_start_time = time.perf_counter()
-            if train_config.save_model and eval_epoch_loss < best_val_loss:
-                if train_config.enable_fsdp:
-                    dist.barrier()
-                if train_config.use_peft:
-                    if train_config.enable_fsdp:
-                        if rank==0:
-                            print(f"we are about to save the PEFT modules")
-                    else:
-                        print(f"we are about to save the PEFT modules")
-                    if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                        model = model.merge_and_unload()
-                        save_merged_checkpoint(model, tokenizer, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"Merged modules are saved in {train_config.output_dir} directory")
-                        else:
-                            print(f"Merged modules are saved in {train_config.output_dir} directory")
-                        
-                    else:
-                        save_peft_checkpoint(model, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"PEFT modules are saved in {train_config.output_dir} directory")
-                        else:
-                            print(f"PEFT modules are saved in {train_config.output_dir} directory")
-
-                else:
-                    if not train_config.enable_fsdp:
-                        save_model_checkpoint(model, train_config.output_dir)
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.FULL_STATE_DICT:
-                        print(" Saving the FSDP model checkpoint using FULL_STATE_DICT")
-                        print("=====================================================")
-                        save_fsdp_model_checkpoint_full(
-                            model, optimizer, rank, train_config, epoch=epoch
-                        )
-                        
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP optimizer using FULL_STATE_DICT")
-                            print("=====================================================")
-                            save_optimizer_checkpoint(
-                                model, optimizer, rank, train_config, epoch=epoch
-                            )
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.SHARDED_STATE_DICT:
-
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer)
-                        else:
-                            print(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config)
-
-                        
-                if train_config.enable_fsdp:
-                    dist.barrier()
-            checkpoint_end_time = time.perf_counter() - checkpoint_start_time
-            checkpoint_times.append(checkpoint_end_time)
-            if eval_epoch_loss < best_val_loss:
+        if train_config.run_validation and accelerator.is_main_process:
+            eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                model,
+                train_config,
+                eval_dataloader,
+                tokenizer,
+                accelerator,
+                wandb_run,
+            )
+            # if eval_epoch_loss < best_val_loss:
+            if True:
                 best_val_loss = eval_epoch_loss
-                if train_config.enable_fsdp:
-                    if rank==0:
-                        print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-                else:
-                    print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-            val_loss.append(float(best_val_loss))
-            val_prep.append(float(eval_ppl))
-        if train_config.enable_fsdp:
-            if rank==0:
-                print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
-        else:
-            print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
+                if train_config.save_model and accelerator.is_main_process:
+                    if train_config.use_peft:
+                        if hasattr(model, "module"):
+                            model = model.module
+                        if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                            model = model.to(dtype=torch.float32)
+                            model = model.merge_and_unload()
+                            model = model.to(dtype=torch.float16)
+                            save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                            accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                        else:
+                            save_peft_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                    else:
+                        save_model_checkpoint(model, train_config.output_dir)
+                        accelerator.print(f"Model is saved in {train_config.output_dir} directory")
 
-        # Saving the results every epoch to plot later
-        if train_config.save_metrics:
-            save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
-
-
-
-    print("==============finetuned test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
-    avg_epoch_time = sum(epoch_times)/ len(epoch_times)
-    avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
-    avg_train_prep = sum(train_prep)/len(train_prep)
-    avg_train_loss = sum(train_loss)/len(train_loss)
-    if train_config.run_validation:
-        avg_eval_prep = sum(val_prep)/len(val_prep)
-        avg_eval_loss = sum(val_loss)/len(val_loss)
-
-    results['avg_train_prep'] = avg_train_prep
-    results['avg_train_loss'] = avg_train_loss
-    if train_config.run_validation:
-        results['avg_eval_prep'] = avg_eval_prep
-        results['avg_eval_loss'] = avg_eval_loss
-    results["avg_epoch_time"] = avg_epoch_time
-    results["avg_checkpoint_time"] = avg_checkpoint_time
-    if train_config.save_metrics:
-        results["metrics_filename"] = metrics_filename
-    if train_config.flop_counter:
-        results["model_tflops"]= TFlops
-    #saving the training params including fsdp setting for reference.
-    if train_config.enable_fsdp and not train_config.use_peft and rank==0:
-        save_train_params(train_config, fsdp_config, rank)
+    results = None
+    sys.exit(0)
 
     return results
 
-def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
+def train_gpt(
+    model,
+    train_dataloader,
+    eval_dataloaders_dict,  # Changed to dictionary of dataset_name -> eval_dataloader
+    test_dataloader,
+    tokenizer,
+    optimizer,
+    lr_scheduler,
+    gradient_accumulation_steps,
+    train_config,
+    accelerator,
+    wandb_run=None,
+):   
     """
-    Trains the model on the given dataloader
+    Trains the model on the given dataloader and evaluates on 5 datasets
 
     Args:
         model: The model to be trained
         train_dataloader: The dataloader containing the training data
+        eval_dataloaders_dict: Dictionary mapping dataset names to their respective eval dataloaders
+        test_dataloader: The test dataloader
+        tokenizer: The tokenizer used for processing text
         optimizer: The optimizer used for training
         lr_scheduler: The learning rate scheduler
         gradient_accumulation_steps: The number of steps to accumulate gradients before performing a backward/update operation
-        num_epochs: The number of epochs to train for
-        local_rank: The rank of the current node in a distributed setting
         train_config: The training configuration
-        eval_dataloader: The dataloader containing the eval data
-        tokenizer: tokenizer used in the eval for decoding the predicitons
+        accelerator: The accelerator for distributed training
+        wandb_run: The wandb run object for logging
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
-    # Create a gradient scaler for fp16
-    if train_config.use_fp16 and train_config.enable_fsdp:
-        scaler = ShardedGradScaler()
-    elif train_config.use_fp16 and not train_config.enable_fsdp:
-        scaler = torch.cuda.amp.GradScaler()
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
+    if train_config.use_fp16 and torch.cuda.is_available():
+        autocast = torch.cuda.amp.autocast
+    else:
+        autocast = contextlib.nullcontext 
 
-    if train_config.test_original_model == True:
-        print("==============original evaluation================")
-        eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)
-        print("==============original test2stage================")
-        test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)
-
-    autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     train_prep = []
     train_loss = []
     val_prep = []
     val_loss =[]
 
-    if train_config.save_metrics:
-        if not os.path.exists(train_config.output_dir):
-            os.makedirs(train_config.output_dir, exist_ok=True)
-        metrics_filename = f"{train_config.output_dir}/metrics_data_{local_rank}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
-        train_step_perplexity = []
-        train_step_loss = []
-        val_step_loss = []
-        val_step_perplexity = []
-
     epoch_times = []
     checkpoint_times = []
     results = {}
-    best_val_loss = float("inf")
+    best_eval_score = float(0)
     total_train_steps = 0
     max_steps_reached = False  # Flag to indicate max training steps reached
     # Get the ids of the numbers from 0 to 100
     numbers = [str(i) for i in range(101)]
     token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
+    print("----------------------------")
+    print(token_ids)
     num_indices = torch.tensor(token_ids).to(model.device)
     generation_kwargs = {
         "min_length": 1,
-        "max_new_tokens": 100,
+        "max_new_tokens": 80,
         "top_k": 0.0,
         "top_p": 1.0,
-        "temperature": train_config.temperature,
-        "do_sample": train_config.do_sample,
+        "temperature": 0,
+        "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
-        "output_scores": True,
-        "return_dict_in_generate": True
     }
-   
     
     # Start the training loop
     for epoch in range(train_config.num_epochs):
-        model.train()
         for param_group in optimizer.param_groups:
             print(f"Current learning rate: {param_group['lr']}")
         # stop when the maximum number of training steps is reached
@@ -786,242 +304,172 @@ def train_dynamic(model, train_dataloader,eval_dataloader, test_dataloader, toke
             break
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
+            model.train()
             total_loss = 0.0
             total_length = len(train_dataloader)//gradient_accumulation_steps
-            pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            with profile(train_config,local_rank) as profile_context:
-                for step, batch in enumerate(train_dataloader):
-                    total_train_steps += 1
-                    # stop when the maximum number of training steps is reached
-                    prompts = [json.loads(item) for item in batch["prompt"]]
-                    query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
-                    with torch.no_grad():
-                        output = model.generate(**query_tensors, **generation_kwargs) 
-                    responses = output.sequences
-                    logits = output.scores
-                    batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                    prompts_new, _, _, _, y, _, _ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                    if len(prompts_new) == 0:
-                        continue
-                    query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt",return_dict=True, continue_final_message=True).to(model.device)
-                    white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                    white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
-                    query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                    query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
+            pbar = tqdm(train_dataloader, colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True, disable=not accelerator.is_local_main_process)
+            for step, batch in enumerate(pbar): 
+                total_train_steps += 1
+                # stop when the maximum number of training steps is reached
+                if train_config.max_train_step > 0 and total_train_steps > train_config.max_train_step:
+                    max_steps_reached = True
+                    accelerator.print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
 
-                    y = torch.tensor(y).view(-1, 1).to(model.device)
-                    with autocast():
-                        logits = model(**query_tensors_new).logits
-                
-                    num_token = logits[:, -1, :]
-                    scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(num_token.shape[0], 101).to(model.device)
+                y = batch.data.pop('y')
 
-                    if train_config.loss_type == 'brier':
-                        num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                        num_conf = F.softmax(num_conf, dim=1)
-                        # compute the loss
-                        y_expanded = y.expand(num_token.shape[0], 101)
-                        squared_differences = (y_expanded - scores) ** 2
-                        loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
-                    elif train_config.loss_type == 'sot':
-                        norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                        smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                        smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                        loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                with autocast():
+                    # get the
+                    output = model(**batch)
+                    logits = output.logits
+                    loss_con = output.loss
 
-                    #print(f"\nlabel: {y[0].item()}  {y[1].item()}") # {y[2].item()}  {y[3].item()}")#  {y[4].item()}  {y[5].item()}  {y[6].item()}  {y[7].item()}")
-                    # print(f"prob: {decoded_texts[0]}  {decoded_texts[1]}")#  {decoded_texts[2]}  {decoded_texts[3]}")# {decoded_texts[4]}  {decoded_texts[5]}  {decoded_texts[6]}  {decoded_texts[7]}")
-                    print(f"loss: {loss}")
-                    loss = loss / gradient_accumulation_steps
-                    if train_config.save_metrics:
-                        train_step_loss.append(loss.detach().float().item())
-                        train_step_perplexity.append(float(torch.exp(loss.detach().float())))
-                    total_loss += loss.detach().float()
-                    if train_config.use_fp16:
-                        # if fp16 is enabled, use gradient scaler to handle gradient update
-                        scaler.scale(loss).backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                scaler.unscale_(optimizer)
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            scaler.step(optimizer)
-                            scaler.update()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    else:
-                        # regular backpropagation when fp16 is not used
-                        loss.backward()
-                        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                            if train_config.gradient_clipping and train_config.gradient_clipping_threshold > 0.0:
-                                if train_config.enable_fsdp:
-                                    model.clip_grad_norm_(train_config.gradient_clipping_threshold)
-                                else:
-                                    torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.gradient_clipping_threshold)
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            pbar.update(1)
-                    if train_config.use_profiler or train_config.flop_counter:
-                        profile_context.step()
-                    if train_config.flop_counter and profile_context.is_done():
-                        TFlops = profile_context.get_flops_per_sec() / 1e12
-                    if wandb_run:
-                        if not train_config.enable_fsdp or rank==0:
-                            wandb_run.log({
-                                'train/epoch': epoch + 1,
-                                'train/step': epoch * len(train_dataloader) + step,
-                                'train/loss': loss.detach().float(),
-                            })
+                num_token = logits[:,-1,:] # get the logit of the confidence token
+                del logits
+                scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
+
+                if train_config.loss_type == 'brier':
+                    num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
+                    num_conf = F.softmax(num_conf, dim=1)
+                    # compute the loss
+                    y_expanded = y.expand(y.shape[0], 101)
+                    squared_differences = (y_expanded - scores) ** 2
+                    loss_cal = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
+                elif train_config.loss_type == 'sot':
+                    norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
+                    smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
+                    smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
+                    loss_cal = -torch.sum(norm_logit * smoothed, dim=1).mean()
+                if train_config.add_loss_con:
+                    loss = loss_con + loss_cal
+                else:
+                    loss = loss_cal
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += loss.detach().float()
+
+                if wandb_run and accelerator.is_main_process:
+                    wandb_run.log({
+                            'train/epoch': epoch + 1,
+                            'train/step': epoch * len(train_dataloader) + step,
+                            'train/loss': loss.detach().float(),
+                            'train/loss_con': loss_con.detach().float(),
+                            'train/loss_cal': loss_cal.detach().float()
+                        })
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
 
-                    if train_config.save_metrics:
-                        save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
                     torch.cuda.empty_cache()
  
-
         epoch_end_time = time.perf_counter()-epoch_start_time
         epoch_times.append(epoch_end_time)
-        # Reducing total_loss across all devices if there's more than one CUDA device
-        if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        elif torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        train_epoch_loss = total_loss / len(train_dataloader)
-        if train_config.enable_fsdp:
-            train_epoch_loss = train_epoch_loss/world_size
-        train_perplexity = torch.exp(train_epoch_loss)
-
-        train_prep.append(float(train_perplexity))
-        train_loss.append(float(train_epoch_loss))
-
-        if not train_config.enable_fsdp or rank==0:
-            memtrace.print_stats()
+        avg_loss = total_loss / len(train_dataloader)
+        avg_ppl = float(torch.exp(torch.tensor(avg_loss)))  # ppl = exp(loss)
 
         # Update the learning rate as needed
         lr_scheduler.step()
 
+        if train_config.run_validation and epoch == (train_config.num_epochs - 1):
+            # Evaluate on all 5 datasets
+            total_eval_score = 0.0
+            total_eval_loss = 0.0
+            dataset_scores = {}
+            original_dataset = train_config.dataset
+            for dataset_name, eval_dataloader in eval_dataloaders_dict.items():
+                # Store original dataset name for logging
+                train_config.dataset = dataset_name
+                
+                accelerator.print(f"Evaluating on dataset: {dataset_name}")
+                
+                temp_wandb_run = None
+                if accelerator.is_main_process and wandb_run:
+                    temp_metrics = {}
+                    def temp_log(metrics_dict, commit=True):
+                        temp_metrics.update(metrics_dict)
+                    
+                    original_log = wandb_run.log
+                    wandb_run.log = temp_log
+                
+                eval_ppl, eval_epoch_loss, _, _ = evaluation_chat(
+                    model,
+                    train_config,
+                    eval_dataloader,
+                    tokenizer,
+                    accelerator,
+                    wandb_run,
+                )
+                
+                if accelerator.is_main_process and wandb_run:
+                    wandb_run.log = original_log
+                    
+                    dataset_metrics = {}
+                    for key, value in temp_metrics.items():
+                        if key.startswith('eval/'):
+                            new_key = f'eval/{dataset_name}/{key[5:]}'
+                            dataset_metrics[new_key] = value
+                        elif key.startswith('plots/'):
+                            dataset_metrics[key] = value
+                    
+                    wandb_run.log(dataset_metrics)
+                    
+                    ece_score = temp_metrics.get('eval/ece', 0)
+                    roc_auc_score = temp_metrics.get('eval/roc_auc', 0)
+                    
+                    dataset_score = 2 * roc_auc_score - ece_score
+                    dataset_scores[dataset_name] = dataset_score
+                    total_eval_score += dataset_score
+                    
+                    wandb_run.log({
+                        f'eval/{dataset_name}/score': dataset_score,
+                    })
+                    
+                    accelerator.print(f"Dataset {dataset_name} - Score: {dataset_score:.4f}, Loss: {eval_epoch_loss:.4f}")
 
-        if train_config.run_validation:
-            del logits
-            torch.cuda.empty_cache()
+            train_config.dataset = original_dataset
             
-            if train_config.save_metrics:
-                val_step_loss.extend(temp_val_loss)
-                val_step_perplexity.extend(temp_step_perplexity)
+            # Calculate average scores and log them
+            if accelerator.is_main_process and wandb_run:
+                # Log aggregate metrics
+                wandb_run.log({
+                    'eval/summary/total_score': total_eval_score,
+                })
+                accelerator.print(f"Evaluation Total Score: {total_eval_score:.4f}")
 
-            checkpoint_start_time = time.perf_counter()
-            if train_config.save_model: #and eval_epoch_loss < best_val_loss:
-                if train_config.enable_fsdp:
-                    dist.barrier()
-                if train_config.use_peft:
-                    if train_config.enable_fsdp:
-                        if rank==0:
-                            print(f"we are about to save the PEFT modules")
-                    else:
-                        print(f"we are about to save the PEFT modules")
-                    if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
-                        model = model.merge_and_unload()
-                        save_merged_checkpoint(model, tokenizer, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"Merged modules are saved in {train_config.output_dir} directory")
+            
+            # Save model if validation performance improved
+            if accelerator.is_main_process:
+                if True:
+                    if train_config.save_model:
+                        if train_config.use_peft:
+                            if hasattr(model, "module"):
+                                model = model.module
+                            if train_config.merge_peft and epoch == (train_config.num_epochs - 1):
+                                model = model.to(dtype=torch.float32)
+                                model = model.merge_and_unload()
+                                model = model.to(dtype=torch.float16)
+                                save_merged_checkpoint(model, tokenizer, train_config.output_dir)
+                                accelerator.print(f"Merged modules are saved in {train_config.output_dir} directory")
+                            else:
+                                save_peft_checkpoint(model, train_config.output_dir)
+                                accelerator.print(f"PEFT modules are saved in {train_config.output_dir} directory")
                         else:
-                            print(f"Merged modules are saved in {train_config.output_dir} directory")
-                        
-                    else:
-                        save_peft_checkpoint(model, train_config.output_dir)
-                        if train_config.enable_fsdp:
-                            if rank==0:
-                                print(f"PEFT modules are saved in {train_config.output_dir} directory")
-                        else:
-                            print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                            save_model_checkpoint(model, train_config.output_dir)
+                            accelerator.print(f"Model is saved in {train_config.output_dir} directory")
 
-                else:
-                    if not train_config.enable_fsdp:
-                        save_model_checkpoint(model, train_config.output_dir)
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.FULL_STATE_DICT:
-                        print(" Saving the FSDP model checkpoint using FULL_STATE_DICT")
-                        print("=====================================================")
-                        save_fsdp_model_checkpoint_full(
-                            model, optimizer, rank, train_config, epoch=epoch
-                        )
-                        
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP optimizer using FULL_STATE_DICT")
-                            print("=====================================================")
-                            save_optimizer_checkpoint(
-                                model, optimizer, rank, train_config, epoch=epoch
-                            )
-                        
-                    elif fsdp_config.checkpoint_type == StateDictType.SHARDED_STATE_DICT:
-
-                        if train_config.save_optimizer:
-                            print(" Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer)
-                        else:
-                            print(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
-                            print("=====================================================")
-                            save_model_and_optimizer_sharded(model, rank, train_config)
-
-               
-                if train_config.enable_fsdp:
-                    dist.barrier()
-            eval_ppl, eval_epoch_loss, temp_val_loss, temp_step_perplexity = evaluation_chat(model, train_config, eval_dataloader, local_rank, tokenizer, wandb_run)        
-            checkpoint_end_time = time.perf_counter() - checkpoint_start_time
-            checkpoint_times.append(checkpoint_end_time)
-            if eval_epoch_loss < best_val_loss:
-                best_val_loss = eval_epoch_loss
-                if train_config.enable_fsdp:
-                    if rank==0:
-                        print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-                else:
-                    print(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
-            val_loss.append(float(best_val_loss))
-            val_prep.append(float(eval_ppl))
-        if train_config.enable_fsdp:
-            if rank==0:
-                print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
-        else:
-            print(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
-
-        # Saving the results every epoch to plot later
-        if train_config.save_metrics:
-            save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
-
-    # test_ece, test_auroc = test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run)    
-    print("==============finetuned test2stage================")
-    test_ece, test_auroc = test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run) 
-    avg_epoch_time = sum(epoch_times)/ len(epoch_times)
-    avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
-    avg_train_prep = sum(train_prep)/len(train_prep)
-    avg_train_loss = sum(train_loss)/len(train_loss)
-    if train_config.run_validation:
-        avg_eval_prep = sum(val_prep)/len(val_prep)
-        avg_eval_loss = sum(val_loss)/len(val_loss)
-
-    results['avg_train_prep'] = avg_train_prep
-    results['avg_train_loss'] = avg_train_loss
-    if train_config.run_validation:
-        results['avg_eval_prep'] = avg_eval_prep
-        results['avg_eval_loss'] = avg_eval_loss
-    results["avg_epoch_time"] = avg_epoch_time
-    results["avg_checkpoint_time"] = avg_checkpoint_time
-    if train_config.save_metrics:
-        results["metrics_filename"] = metrics_filename
-    if train_config.flop_counter:
-        results["model_tflops"]= TFlops
-    #saving the training params including fsdp setting for reference.
-    if train_config.enable_fsdp and not train_config.use_peft and rank==0:
-        save_train_params(train_config, fsdp_config, rank)
+    results = None
+    sys.exit(0)
 
     return results
 
-def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run, original = False):
+def evaluation_chat(
+    model,
+    train_config,
+    eval_dataloader,
+    tokenizer,
+    accelerator,
+    wandb_run=None,
+    original=False
+):
     """
     Evaluates the model on the given dataloader
 
@@ -1033,8 +481,6 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
 
     Returns: eval_ppl, eval_epoch_loss
     """
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
     model.eval()
     all_y = []
     eval_probs = []
@@ -1059,25 +505,15 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
         "output_scores": True,
         "return_dict_in_generate": True
     }
-    with MemoryTrace() as memtrace:
-        id = 0
+    with torch.no_grad():
         model.eval()
         for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
-            for key in batch.keys():
-                if train_config.enable_fsdp:
-                    batch[key] = batch[key].to(local_rank)
-                else:
-                    if is_xpu_available():
-                        batch[key] = batch[key].to('xpu:0')
-                    else:
-                        batch[key] = batch[key].to(model.device)
-            with torch.no_grad():
-                output = model(**batch)
-                logits = output.logits
-                loss_con = output.loss
+            y = batch.data.pop('y')
+            output = model(**batch)
+            logits = output.logits
+            loss_con = output.loss
             num_token = logits[:,-1,:] # get the logit of the confidence token
             del logits
-            y = batch.data.pop('y')
             scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(y.shape[0], 101).to(model.device)
 
             if train_config.loss_type == 'brier':
@@ -1096,403 +532,66 @@ def evaluation_chat(model,train_config, eval_dataloader, local_rank, tokenizer, 
                 val_step_loss.append(loss.detach().float().item())
                 val_step_perplexity.append(float(torch.exp(loss.detach().float())))
 
-            # loss = loss_con + loss_cal
-            loss = loss_cal
-            print(f"loss: {loss} loss_con: {loss_con} loss_cal: {loss_cal}") 
+            if train_config.add_loss_con:
+                loss = loss_con + loss_cal
+            else:
+                loss = loss_cal
             
             eval_loss += loss.detach().float()
             eval_loss_con += loss_con.detach().float()
             eval_loss_cal += loss_cal.detach().float()
             probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
+            probs, y = accelerator.gather_for_metrics((probs, y))
             eval_probs.extend(probs.detach().cpu().numpy().tolist())
             all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
 
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    val_metrics = compute_conf_metrics(all_y, eval_probs)
-    if train_config.use_wandb:
-        plot_confidence_histogram(all_y, eval_probs, "evaluation", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, eval_probs, "evaluation", wandb_run, original)
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
+    total_num = len(all_y)
+    
+    gathered_all_y = all_y
+    gathered_eval_probs = eval_probs
 
-    # If there's more than one CUDA device, reduce evaluation loss across all devices
-    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(eval_loss_con, op=dist.ReduceOp.SUM)
-    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(eval_loss_cal, op=dist.ReduceOp.SUM)
-
-    # Compute average loss and perplexity
-    eval_epoch_loss = eval_loss / len(eval_dataloader)
-    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader)
-    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader)
-    if train_config.enable_fsdp:
-        eval_epoch_loss = eval_epoch_loss/world_size
-        eval_epoch_loss_con = eval_epoch_loss_con/world_size
-        eval_epoch_loss_cal = eval_epoch_loss_cal/world_size
+    eval_epoch_loss = eval_loss / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_con = eval_loss_con / len(eval_dataloader) / accelerator.num_processes
+    eval_epoch_loss_cal = eval_loss_cal / len(eval_dataloader) / accelerator.num_processes
     eval_ppl = torch.exp(eval_epoch_loss)
 
-    # Print evaluation metrics
-    if train_config.enable_fsdp:
-        if local_rank==0:
-            print(f" {eval_ppl=} {eval_epoch_loss=}")
-    else:
-        print(f" {eval_ppl=} {eval_epoch_loss=}")
+    if accelerator.is_main_process:
+        all_gathered_y = gathered_all_y
+        all_gathered_probs = gathered_eval_probs
+        
+        accelerator.print(f"====== {train_config.dataset}")
+        accelerator.print(f"Number: {total_num}")
+        val_metrics = compute_conf_metrics(all_gathered_y, all_gathered_probs, total_num)
+        ece_score = val_metrics['ece']
+        roc_auc_score = val_metrics['auroc']
 
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
+        if train_config.use_wandb:
+            plot_confidence_histogram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], 
+                wandb_run, original, train_config.dataset, use_annotation=True
+            )
+            plot_ece_diagram(
+                all_gathered_y, all_gathered_probs, "evaluation", 
+                wandb_run, original, train_config.dataset
+            )
+        
+        accelerator.print(f" {eval_ppl=} {eval_epoch_loss=}")
+
+        if wandb_run:
             wandb_run.log({
-                        'eval/perplexity': eval_ppl,
-                        'eval/loss': eval_epoch_loss,
-                        'eval/loss_con': eval_epoch_loss_con,
-                        'eval/loss_cal': eval_epoch_loss_cal,
-                        'eval/ece': ece_score,
-                        'eval/roc_auc': roc_auc_score,
-                    }, commit=False)
+                'eval/perplexity': eval_ppl,
+                'eval/loss': eval_epoch_loss,
+                'eval/loss_con': eval_epoch_loss_con,
+                'eval/loss_cal': eval_epoch_loss_cal,
+                'eval/ece': ece_score,
+                'eval/roc_auc': roc_auc_score,
+            }, commit=False)
+    else:
+        ece_score = 0
+        roc_auc_score = 0
 
     return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
-
-
-def evaluation_dynamic(model,train_config, eval_dataloader, local_rank, tokenizer, wandb_run):
-    """
-    Evaluates the model on the given dataloader
-
-    Args:
-        model: The model to evaluate
-        eval_dataloader: The dataloader containing the evaluation data
-        local_rank: The rank of the current node in a distributed setting
-        tokenizer: The tokenizer used to decode predictions
-
-    Returns: eval_ppl, eval_epoch_loss
-    """
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
-    model.eval()
-    all_y = []
-    eval_probs = []
-    val_step_loss = []
-    val_step_perplexity = []
-    eval_loss = 0.0  # Initialize evaluation loss
-    total_eval_steps = 0
-    # Get the ids of the numbers from 0 to 100
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 100,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample": True,
-        "pad_token_id": tokenizer.eos_token_id,
-        "output_scores": True,
-        "return_dict_in_generate": True
-    }
-    with MemoryTrace() as memtrace:
-        id = 0
-        model.eval()
-        wan_table = wandb.Table(columns=['response','confidence', 'y'])
-        for step, batch in enumerate(tqdm(eval_dataloader,colour="green", desc="evaluating Epoch", dynamic_ncols=True)):
-            prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
-            with torch.no_grad():
-                output = model.generate(query_tensors, **generation_kwargs) 
-            responses = output.sequences
-            logits = output.scores
-            batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-            try:
-                prompts_new, _, _, confidences, y, y_None, confidences_None = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-            except:
-                continue
-            all_y.extend(y)
-            eval_probs.extend(confidences)
-            for response, confidence, y_item in zip(batch_responses, confidences_None, y_None):
-                wan_table.add_data(response, confidence, y_item)
-            query_tensors_new = tokenizer(prompts_new, add_special_tokens=False, padding=True, truncation=True, return_tensors="pt")
-            white_spaces = torch.full((len(prompts_new), 1), 220)
-            attention = torch.full((len(prompts_new), 1), 1)
-            query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-            query_tensors_new['attention_mask']  = torch.cat([query_tensors_new['attention_mask'], attention], dim=1).to(model.device)
-            
-            with torch.no_grad():
-                logits = model(**query_tensors_new).logits
-            y = torch.tensor(y).view(-1, 1).to(model.device)  
-            num_token = logits[:, -1, :]
-            scores = torch.arange(0, 1.01, 0.01).view(1, 101).expand(num_token.shape[0], 101).to(model.device)
-
-            if train_config.loss_type == 'brier':
-                num_conf = torch.index_select(num_token, 1, num_indices.squeeze(0)) # take out the logit of 0-100
-                num_conf = F.softmax(num_conf, dim=1)
-                # compute the loss
-                y_expanded = y.expand(num_token.shape[0], 101)
-                squared_differences = (y_expanded - scores) ** 2
-                loss = torch.mean(torch.sum(num_conf * squared_differences, dim=1))
-            elif train_config.loss_type == 'sot':
-                norm_logit = torch.index_select(F.log_softmax(num_token, dim=1), 1, num_indices.squeeze(0))
-                smoothed = y * scores * (2 - scores) + (1 - y) * (1 - scores) * (1 + scores)
-                smoothed = smoothed / smoothed.sum(dim=1, keepdim=True)
-                loss = -torch.sum(norm_logit * smoothed, dim=1).mean()
-
-                if train_config.save_metrics:
-                    val_step_loss.append(loss.detach().float().item())
-                    val_step_perplexity.append(float(torch.exp(loss.detach().float())))
-
-                eval_loss += loss.detach().float()
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({"Evaluation_samples": wan_table})
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    val_metrics = compute_conf_metrics(all_y, eval_probs)
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
-
-    # If there's more than one CUDA device, reduce evaluation loss across all devices
-    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-
-    # Compute average loss and perplexity
-    eval_epoch_loss = eval_loss / len(eval_dataloader)
-    if train_config.enable_fsdp:
-        eval_epoch_loss = eval_epoch_loss/world_size
-    eval_ppl = torch.exp(eval_epoch_loss)
-
-    # Print evaluation metrics
-    if train_config.enable_fsdp:
-        if local_rank==0:
-            print(f" {eval_ppl=} {eval_epoch_loss=}")
-    else:
-        print(f" {eval_ppl=} {eval_epoch_loss=}")
-
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({
-                        'eval/perplexity': eval_ppl,
-                        'eval/loss': eval_epoch_loss,
-                        'eval/ece': ece_score,
-                        'eval/roc_auc': roc_auc_score,
-                    }, commit=False)
-
-    return eval_ppl, eval_epoch_loss, val_step_loss, val_step_perplexity
-
-def test(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run):
-    """
-    Evaluates the model on the given dataloader
-
-    Args:
-        model: The model to evaluate
-        eval_dataloader: The dataloader containing the evaluation data
-        local_rank: The rank of the current node in a distributed setting
-        tokenizer: The tokenizer used to decode predictions
-
-    Returns: eval_ppl, eval_epoch_loss
-    """
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
-    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
-    
-    all_y = []
-    test_probs = []
-
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 200,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "temperature": 0.1,
-        "do_sample": True,
-        "pad_token_id": tokenizer.eos_token_id,
-        "output_scores": True,
-        "return_dict_in_generate": True
-    }
-
-    with MemoryTrace() as memtrace:
-        id = 0
-        wan_table = wandb.Table(columns=['response','confidence', 'y'])
-        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=True)):
-            prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
-            # stop when the maximum number of eval steps is reached
-            
-            # Ensure no gradients are computed for this scope to save memory
-            for key in batch.keys():
-                if train_config.enable_fsdp:
-                    if is_xpu_available():
-                        batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
-                    else:
-                        batch[key] = batch[key].to(local_rank)
-                else:
-                    if is_xpu_available():
-                        batch[key] = batch[key].to('xpu:0')
-                    else:
-                        batch[key] = batch[key].to(model.device)
-            with torch.no_grad():
-                # Forward pass and compute loss
-                output = model.generate(query_tensors, **generation_kwargs) 
-                responses = output.sequences
-                logits = output.scores
-                batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                try:
-                    _,_,_,confidences, y, y_unfiltered, confidence_unfiltered = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                except:
-                    continue
-            for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
-                wan_table.add_data(response, confidence, y_item)        
-            all_y.extend(y)
-            test_probs.extend(confidences)
-
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({"Testing_samples": wan_table})
-    number = len(all_y)
-    print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(all_y, test_probs)
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
-
-    # If there's more than one CUDA device, reduce evaluation loss across all devices
-    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({
-                        'test/ece': ece_score,
-                        'test/roc_auc': roc_auc_score,
-                    }, commit=False)
-
-    return ece_score, roc_auc_score
-
-def test_2stage(model, train_config, test_dataloader, local_rank, tokenizer, wandb_run, original=False):
-    """
-    Evaluates the model on the given dataloader
-
-    Args:
-        model: The model to evaluate
-        eval_dataloader: The dataloader containing the evaluation data
-        local_rank: The rank of the current node in a distributed setting
-        tokenizer: The tokenizer used to decode predictions
-
-    Returns: eval_ppl, eval_epoch_loss
-    """
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
-    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
-    
-    all_y = []
-    test_probs = []
-    test_probs_stage1 = []
-
-    generation_kwargs = {
-        "min_length": 1,
-        "max_new_tokens": 200, 
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "repetition_penalty": train_config.repetition_penalty,
-        "temperature": train_config.temperature,
-        "do_sample": train_config.do_sample,
-        "pad_token_id": tokenizer.eos_token_id,
-        "output_scores": True,
-        "return_dict_in_generate": True,
-        # "pad_token_id": tokenizer.pad_token_id
-    }
-    numbers = [str(i) for i in range(101)]
-    token_ids = [tokenizer.encode(number, add_special_tokens=False)[0] for number in numbers]
-    num_indices = torch.tensor(token_ids).to(model.device)
-    with MemoryTrace() as memtrace:
-        id = 0
-        wan_table = wandb.Table(columns=['response','confidence', 'y'])
-        for step, batch in enumerate(tqdm(test_dataloader,colour="green", desc="testing Epoch", dynamic_ncols=False)):
-            
-            prompts = [json.loads(item) for item in batch["prompt"]]
-            query_tensors = tokenizer.apply_chat_template(prompts, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
-            # stop when the maximum number of eval steps is reached
-            
-
-            with torch.no_grad():
-                output = model.generate(**query_tensors, **generation_kwargs, ) 
-                # output = model(**query_tensors, **generation_kwargs)
-                responses = output.sequences
-                batch_responses = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in responses]
-                prompts_new, out_responses, questions, confidence_stage1, y, y_unfiltered, confidence_unfiltered,_ = confidence_replace(prompts, batch_responses, batch['correct_answer'], train_config.dataset)
-                if len(prompts_new) == 0:
-                    continue
-                y = torch.tensor(y).view(-1, 1).to(model.device)
-
-                # include attention mask
-                query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_dict=True, return_tensors="pt", continue_final_message=True).to(model.device)
-                white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                white_attention = torch.full((len(prompts_new), 1), 1).to(model.device)
-                query_tensors_new['input_ids'] = torch.cat([query_tensors_new['input_ids'], white_spaces], dim=1).to(model.device)
-                query_tensors_new['attention_mask'] = torch.cat([query_tensors_new['attention_mask'], white_attention], dim=1).to(model.device)
-                logits = model(**query_tensors_new).logits
-
-                # exclude attention mask
-                # query_tensors_new = tokenizer.apply_chat_template(prompts_new, tokenize=True, padding="longest", padding_side='left', truncation=True, return_tensors="pt", continue_final_message=True).to(model.device)
-                # white_spaces = torch.full((len(prompts_new), 1), 220).to(model.device)
-                # query_tensors_new = torch.cat([query_tensors_new, white_spaces], dim=1).to(model.device)
-                # logits = model(query_tensors_new).logits
-
-            num_token = logits[:,-1,:]
-            probs = 0.01 * torch.argmax(torch.index_select(num_token, 1, num_indices.squeeze(0)), dim=1)
-            # num_token2 = logits2[:,-1,:]
-            # probs2 = 0.01 * torch.argmax(torch.index_select(num_token2, 1, num_indices.squeeze(0)), dim=1)
-            test_probs.extend(probs.detach().cpu().numpy().tolist())
-            test_probs_stage1.extend(confidence_stage1)
-            # print(probs)
-            # print(confidence_stage1)
-            all_y.extend(y.squeeze(1).detach().cpu().numpy().tolist())
-            for response, confidence, y_item in zip(batch_responses, confidence_unfiltered, y_unfiltered):
-                wan_table.add_data(response, confidence, y_item)        
-
-
-    # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            if original == True:
-                wandb_run.log({"Testing_samples/original": wan_table})
-            else:
-                wandb_run.log({"Testing_samples/fine-tuned": wan_table})
-
-    number = len(all_y)
-    print(f"Number: {number}")
-    print("Stage1:")
-    val_metrics_stage1 = compute_conf_metrics(all_y, test_probs_stage1)
-    if train_config.use_wandb:
-        plot_confidence_histogram(all_y, test_probs_stage1, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, test_probs_stage1, "stage1", wandb_run, original)
-
-    print("Stage2:")
-    val_metrics = compute_conf_metrics(all_y, test_probs)
-    if train_config.use_wandb:
-        plot_confidence_histogram(all_y, test_probs, "stage2", val_metrics['acc'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(all_y, test_probs, "stage2", wandb_run,original)
-    
-    ece_score = val_metrics['ece']
-    roc_auc_score = val_metrics['auroc']
-
-    # If there's more than one CUDA device, reduce evaluation loss across all devices
-    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({
-                        'test/ece_stage1': ece_score,
-                        'test/roc_auc_stage1': roc_auc_score,
-                        'test/ece_stage2': ece_score,
-                        'test/roc_auc_stage2': roc_auc_score,
-                    }, commit=False)
-
-    return ece_score, roc_auc_score
 
 def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     """
@@ -1506,16 +605,251 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
 
     Returns: eval_ppl, eval_epoch_loss
     """
-    if train_config.enable_fsdp:
-        world_size = int(os.environ["WORLD_SIZE"])
-    # llm = LLM(model=train_config.output_dir, max_model_len=93968)
-    
     all_y = []
     test_probs = []
     test_probs_stage1 = []
-
     llm = LLM(
         model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=train_config.seed,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    if train_config.test_linguistic:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_3level(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    elif train_config.test_correct:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_correct(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    else:
+        responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+
+    return ece_score, roc_auc_score, val_metrics['acc2']
+
+
+def test_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    all_y = []
+    test_probs = []
+    test_probs_stage1 = []
+    original = True
+    # Initialize OpenAI client
+    try:
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+            api_version=os.environ['OPENAI_API_VERSION'],
+            azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+        )
+    except:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+        )
+    # Create a wandb table for logging
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    
+    # Process prompts
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+
+    # Generate responses using OpenAI API
+    outputs = []
+    for prompt in prompts:
+        try:
+            response = client.chat.completions.create(
+                model=os.environ['OPENAI_DEPLOYMENT_NAME'],
+                messages=prompt,
+                temperature=train_config.temperature,
+                max_tokens=400,
+                top_p=1.0,
+                n=1
+            )
+            outputs.append(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error generating response: {e}")
+            outputs.append("")
+    
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace_gpt(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=False)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Log to wandb
+    if wandb_run:
+        if original == True:
+            wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+        else:
+            wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table})
+
+    # Compute metrics
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'gpt/number_{train_config.dataset}': number,
+                        f'gpt/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'gpt/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'gpt/ece_{train_config.dataset}': ece_score,
+                        f'gpt/auroc_{train_config.dataset}': roc_auc_score,
+                        f'gpt/score_{train_config.dataset}': score,
+                    }, commit=False)
+    prompts2 = []
+    for prompt, response in zip(prompts, responses):
+        prompt[2]['content'] += (' ' + response)
+        prompts2.append(prompt)
+    
+    original = False
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    confidences = []
+    import re
+    for output in outputs:
+        percent_str = output.outputs[0].text
+        match = re.search(r"(\d+\.?\d*)%", percent_str)
+        if match:
+            percent = float(match.group(1)) / 100
+            confidences.append(percent)
+        else:
+            confidences.append(0.0)
+            print(f"Warning: Invalid confidence format: {percent_str}")
+    val_metrics = compute_conf_metrics(y, confidences, len(prompts2))
+    
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
+
+
+
+def test_reflection(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
+
+            Here is the example:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
+            Confidence: 90%
+            """
+    original = True
+    llm = LLM(
+        model=train_config.model_name,
         tensor_parallel_size=1,
         dtype="float16",
         seed=42,
@@ -1534,47 +868,302 @@ def test_vllm(train_config, test_dataset, tokenizer, wandb_run, original=False):
     
     wan_table = wandb.Table(columns=['response','confidence', 'y'])
     prompts = [json.loads(item) for item in test_dataset["prompt"]]
-    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt", continue_final_message=True)
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
     outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
     responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
     for response, confidence, y_item in zip(responses, confidences_None, y_None):
         wan_table.add_data(response, confidence, y_item)        
 
-
     # Compute ECE and ROC-AUC score given all_y and eval_probs
-    if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            if original == True:
-                wandb_run.log({"Testing_samples/original": wan_table})
-            else:
-                wandb_run.log({"Testing_samples/fine-tuned": wan_table})
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
 
     number = len(y)
     print(f"Number: {number}")
-    val_metrics = compute_conf_metrics(y, out_confidences)
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts))
     if train_config.use_wandb:
-        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics_stage1['acc'], val_metrics_stage1['auroc'], val_metrics_stage1['ece'], wandb_run, original, use_annotation=True)
-        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original)
+        plot_confidence_histogram(y, out_confidences, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage1", wandb_run, original, train_config.dataset)
 
     ece_score = val_metrics['ece']
     roc_auc_score = val_metrics['auroc']
-
-    # If there's more than one CUDA device, reduce evaluation loss across all devices
-    if is_xpu_available() and (torch.xpu.device_count() > 1 and train_config.enable_fsdp):
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
-    if torch.cuda.device_count() > 1 and train_config.enable_fsdp:
-        dist.all_reduce(eval_loss, op=dist.ReduceOp.SUM)
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
 
     if wandb_run:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run.log({
-                        'test/ece_stage1': ece_score,
-                        'test/roc_auc_stage1': roc_auc_score,
+        wandb_run.log({
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
                     }, commit=False)
+    del llm
+    original = False
+    prompts2 = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for prompt, response, confidence in zip(prompts, out_response_cleans, out_confidences):
+        if confidence < 0.5:
+            prompt[0]['content'] = reflection_prompt
+            prompt[1]['content'] += ('\nResponse:' + response + str(int(confidence * 100)) + '%\n' + 'The confidence is less than 50%, analyze the answer step by step and provide a better one.')
+            prompt[2]['content'] = 'Reflection: The response is '
+            prompts2.append(prompt)
+        else:
+            prompts2.append(prompt)
+    
+    wan_table2 = wandb.Table(columns=['response','confidence', 'y'])
+    prompts2 = tokenizer.apply_chat_template(prompts2, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    llm = LLM(
+        model=train_config.model_name if original else train_config.output_dir,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
 
-    return ece_score, roc_auc_score
+    outputs = llm.generate(prompts=prompts2, sampling_params=sampling_params)
+    responses, out_response_cleans, questions, out_confidences, y, y_None, confidences_None, correct_answer_cleans = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses, confidences_None, y_None):
+        wan_table2.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score given all_y and eval_probs
+    wandb_run.log({f"Testing_{train_config.dataset}/fine-tuned": wan_table2})
+
+    number = len(y)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y, out_confidences, len(prompts)) 
+    # Plot metrics if wandb is enabled
+    if train_config.use_wandb:
+        plot_confidence_histogram(y, out_confidences, "stage2", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y, out_confidences, "stage2", wandb_run, original, train_config.dataset)
+
+    # Calculate scores
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    # Log metrics to wandb
+    if wandb_run:
+        wandb_run.log({
+                        f'test/number_{train_config.dataset}': number,
+                        f'test/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'test/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'test/ece_{train_config.dataset}': ece_score,
+                        f'test/auroc_{train_config.dataset}': roc_auc_score,
+                        f'test/score_{train_config.dataset}': score,
+                    }, commit=False)
+    
+    return responses
 
 
+def test_reflection_gpt(train_config, test_dataset, tokenizer, wandb_run, original=False):
+    """
+    Evaluates the model on the given dataloader using OpenAI API with different numbers of low-confidence samples
+    being regenerated by GPT. Optimized to call the API only once for the maximum sample count.
+
+    Args:
+        train_config: The training configuration
+        test_dataset: The dataset containing the test data
+        tokenizer: The tokenizer used to process prompts
+        wandb_run: The wandb run object for logging
+        original: Whether to use the original model or the fine-tuned model
+
+    Returns: ece_score, roc_auc_score, accuracy
+    """
+    reflection_prompt =  """For the question, response, and confidence, if the confidence is less than 50%, please revise your response and provide a better one. Otherwise, please repeat the response and the confidence.
+
+            Here is the example:
+
+            Question: Who wrote Paradise Lost?
+            Response: The author of Paradise Lost was Percy Bysshe Shelley.
+            Confidence: 40%
+            If the confidence is less than 50%, analyze the answer and provide a better one. 
+            Reflection: The response is less than 50%. 
+            Response: The author of Paradise Lost wasn't Percy Bysshe Shelley, it was John Milton, who published the book in 1667.
+            Confidence: 90%
+            """
+    original = True
+    llm = LLM(
+        model=train_config.model_name,
+        tensor_parallel_size=1,
+        dtype="float16",
+        seed=42,
+        disable_log_stats=True,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(
+                                     n=1,
+                                     temperature=train_config.temperature,
+                                    top_k= -1,
+                                    top_p=1.0,
+                                     max_tokens=400)
+
+    
+    wan_table = wandb.Table(columns=['response','confidence', 'y'])
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    prompts = tokenizer.apply_chat_template(prompts, tokenize=False, padding="longest", truncation=True, return_tensors="pt",  continue_final_message=True)
+    outputs = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    responses_stage1, out_response_cleans_stage1, questions_stage1, out_confidences_stage1, y_stage1, y_None_stage1, confidences_None_stage1, correct_answer_cleans_stage1 = confidence_replace(test_dataset['question'], outputs, test_dataset['correct_answer'], dataset_name=train_config.dataset,vllm=True)
+    for response, confidence, y_item in zip(responses_stage1, confidences_None_stage1, y_None_stage1):
+        wan_table.add_data(response, confidence, y_item)        
+
+    # Compute ECE and ROC-AUC score for stage 1
+    wandb_run.log({f"Testing_{train_config.dataset}/original": wan_table})
+
+    number = len(y_stage1)
+    print(f"Number: {number}")
+    val_metrics = compute_conf_metrics(y_stage1, out_confidences_stage1, len(prompts))
+    if train_config.use_wandb:
+        plot_confidence_histogram(y_stage1, out_confidences_stage1, "stage1", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+        plot_ece_diagram(y_stage1, out_confidences_stage1, "stage1", wandb_run, original, train_config.dataset)
+
+    ece_score = val_metrics['ece']
+    roc_auc_score = val_metrics['auroc']
+    score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+    if wandb_run:
+        wandb_run.log({
+                        f'origin/number_{train_config.dataset}': number,
+                        f'origin/acc_{train_config.dataset}': val_metrics['acc'],
+                        f'origin/acc2_{train_config.dataset}': val_metrics['acc2'],
+                        f'origin/ece_{train_config.dataset}': ece_score,
+                        f'origin/auroc_{train_config.dataset}': roc_auc_score,
+                        f'origin/score_{train_config.dataset}': score,
+                    }, commit=False)
+    del llm
+    
+    confidence_with_indices = [(conf, i) for i, conf in enumerate(out_confidences_stage1)]
+    confidence_with_indices.sort(key=lambda x: x[0])
+    
+    sample_counts = [10, 50, 80, 100, 200, 300, 400]
+    max_count = min(max(sample_counts), len(confidence_with_indices))
+    original = False
+    
+    metrics_table = wandb.Table(columns=["sample_count", "acc", "acc2", "ece", "auroc", "score"])
+    
+    print(f"\n===== Generating responses for {max_count} lowest confidence samples =====")
+    
+    lowest_conf_indices = [idx for _, idx in confidence_with_indices[:max_count]]
+    
+    prompts_low_conf = []
+    prompts = [json.loads(item) for item in test_dataset["prompt"]]
+    for idx in lowest_conf_indices:
+        prompt = prompts[idx].copy()
+        prompts_low_conf.append(prompt)
+    
+    gpt_responses = []
+    gpt_confidences = []
+    gpt_y = []
+    
+    if prompts_low_conf:
+        try:
+            from openai import AzureOpenAI
+            client = AzureOpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+                api_version=os.environ['OPENAI_API_VERSION'],
+                azure_endpoint=os.environ['OPENAI_AZURE_ENDPOINT'],
+            )
+        except:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=os.environ['OPENAI_API_KEY'],
+            )
+        
+        outputs_low_conf = []
+        for i, prompt in enumerate(prompts_low_conf):
+            try:
+                print(f"Generating response for sample {i+1}/{len(prompts_low_conf)}")
+                response = client.chat.completions.create(
+                    model=os.environ.get('OPENAI_DEPLOYMENT_NAME'),
+                    messages=prompt,
+                    temperature=train_config.temperature,
+                    max_tokens=400,
+                    top_p=1.0,
+                    n=1
+                )
+                outputs_low_conf.append(response.choices[0].message.content)
+            except Exception as e:
+                print(f"Error generating response with GPT API: {e}")
+                outputs_low_conf.append("")
+        
+        questions_low_conf = [test_dataset['question'][idx] for idx in lowest_conf_indices]
+        correct_answers_low_conf = [test_dataset['correct_answer'][idx] for idx in lowest_conf_indices]
+        
+        responses_stage2, out_response_cleans_stage2, questions_stage2, out_confidences_stage2, y_stage2, y_None_stage2, confidences_None_stage2, correct_answer_cleans_stage2 = confidence_replace_gpt(questions_low_conf, outputs_low_conf, correct_answers_low_conf, dataset_name=train_config.dataset, vllm=False)
+        
+        for i in range(len(responses_stage2)):
+            gpt_responses.append(responses_stage2[i])
+            gpt_confidences.append(out_confidences_stage2[i])
+            gpt_y.append(y_stage2[i])
+    
+    for count in sample_counts:
+        actual_count = min(count, max_count, len(confidence_with_indices))
+        print(f"\n===== Evaluating with {actual_count} lowest confidence samples =====")
+        
+        current_lowest_indices = [idx for _, idx in confidence_with_indices[:actual_count]]
+        other_indices = [idx for idx in range(len(out_confidences_stage1)) if idx not in lowest_conf_indices[:actual_count]]
+        
+        wan_table2 = wandb.Table(columns=['response', 'confidence', 'y', 'source'])
+        
+        final_responses = []
+        final_confidences = []
+        final_y = []
+        
+        for idx in other_indices:
+            final_responses.append(responses_stage1[idx])
+            final_confidences.append(out_confidences_stage1[idx])
+            final_y.append(y_stage1[idx])
+            # wan_table2.add_data(responses_stage1[idx], confidences_None_stage1[idx], y_None_stage1[idx], "stage1-original")
+        
+        for i in range(min(actual_count, len(gpt_responses))):
+            final_responses.append(gpt_responses[i])
+            final_confidences.append(gpt_confidences[i])
+            final_y.append(gpt_y[i])
+
+        val_metrics = compute_conf_metrics(final_y, final_confidences, len(final_y))
+        
+        if train_config.use_wandb:
+            plot_confidence_histogram(final_y, final_confidences, f"combined_{actual_count}", val_metrics['acc2'], val_metrics['auroc'], val_metrics['ece'], wandb_run, original, train_config.dataset, use_annotation=True)
+            plot_ece_diagram(final_y, final_confidences, f"combined_{actual_count}", wandb_run, original, train_config.dataset)
+
+        ece_score = val_metrics['ece']
+        roc_auc_score = val_metrics['auroc']
+        score = 3 * val_metrics['acc2'] + 2 * roc_auc_score - ece_score
+
+        metrics_dict = {
+            f'test_{actual_count}/number_{train_config.dataset}': len(final_y),
+            f'test_{actual_count}/acc_{train_config.dataset}': val_metrics['acc'],
+            f'test_{actual_count}/acc2_{train_config.dataset}': val_metrics['acc2'],
+            f'test_{actual_count}/ece_{train_config.dataset}': ece_score,
+            f'test_{actual_count}/auroc_{train_config.dataset}': roc_auc_score,
+            f'test_{actual_count}/score_{train_config.dataset}': score,
+            f'test_{actual_count}/low_conf_count': actual_count,
+            f'test_{actual_count}/high_conf_count': len(other_indices),
+        }
+        wandb_run.log(metrics_dict, commit=False)
+        
+        metrics_table.add_data(actual_count, val_metrics['acc'], val_metrics['acc2'], ece_score, roc_auc_score, score)
+        
+        print(f"Sample count: {actual_count}")
+        print(f"Accuracy: {val_metrics['acc']:.4f}")
+        print(f"Accuracy (correct with conf): {val_metrics['acc2']:.4f}")
+        print(f"ECE: {ece_score:.4f}")
+        print(f"AUROC: {roc_auc_score:.4f}")
+        print(f"Score: {score:.4f}")
+    
+    wandb_run.log({f"metrics_summary_{train_config.dataset}": metrics_table})
+    
+    return final_responses
 
 
 def freeze_transformer_layers(model, num_layer):
@@ -1583,12 +1172,10 @@ def freeze_transformer_layers(model, num_layer):
                 for param in layer.parameters():
                     param.requires_grad = False
 
-
 def check_frozen_layers_peft_model(model):
      for i, layer in enumerate(model.base_model.model.model.layers):
             for name, param in layer.named_parameters():
                 print(f"Layer {i}, parameter {name}: requires_grad = {param.requires_grad}")
-
 
 def setup():
     """Initialize the process group for distributed training"""
@@ -1598,23 +1185,16 @@ def setup():
     else:
         dist.init_process_group("nccl")
 
-
 def setup_environ_flags(rank):
     """Set environment flags for debugging purposes"""
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["NCCL_ASYNC_ERROR_HANDLING"] = str(1)
-    # os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
-    # This flag will help with CUDA memory fragmentations that can lead into OOM in some cases.
-    # Note this is only availble in PyTorch Nighlies (as of July 30 2023)
-    # os.environ['PYTORCH_CUDA_ALLOC_CONF']='expandable_segments:True'
     if rank == 0:
         print(f"--> Running with torch dist debug set to detail")
-
 
 def cleanup():
     """Clean up the process group after training"""
     dist.destroy_process_group()
-
 
 def clear_gpu_cache(rank=None):
     """Clear the GPU cache for all ranks"""
@@ -1624,7 +1204,6 @@ def clear_gpu_cache(rank=None):
         torch.xpu_empty_cache()
     else:
         torch.cuda.empty_cache()
-
 
 def get_parameter_dtypes(model):
     """Get the data types of model parameters"""
@@ -1649,12 +1228,8 @@ def print_model_size(model, config, rank: int = 0) -> None:
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"\n--> {config.model_name} has {total_params / 1e6} Million params\n")
 
-
-
-
 def get_policies(cfg, rank):
     """Get the policies for mixed precision and fsdp wrapping"""
-
 
     verify_bfloat_support = ((
     torch.version.cuda
@@ -1664,7 +1239,6 @@ def get_policies(cfg, rank):
     and nccl.version() >= (2, 10)
     ) or
     (is_xpu_available()))
-
 
     mixed_precision_policy = None
     wrapping_policy = None

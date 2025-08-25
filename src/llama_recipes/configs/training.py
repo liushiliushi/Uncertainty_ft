@@ -61,3 +61,7 @@ class train_config:
     test_original_model = False
     cuda: str = "0"
     add_loss_con: bool = False
+    test_linguistic: bool = False
+    test_correct: bool = False
+    train_coarse: bool = False
+    train_gpt: bool = False # Enable validation on multiple datasets (5 datasets) during training
