@@ -1,4 +1,4 @@
-# Uncertainty Fine-tuning for Language Models
+
 
 This is the official repository for *ConfTuner: Training Large Language Models to Express Their Confidence Verbally*. It supports multiple base models including Llama-3.1, Mistral, and Qwen.
 
@@ -6,8 +6,8 @@ This is the official repository for *ConfTuner: Training Large Language Models t
 
 1. Clone the repository:
 ```bash
-git clone https://anonymous.4open.science/r/Uncertainty_ft-2761
-cd Uncertainty_ft-2761
+git clone git@github.com:liushiliushi/Uncertainty_ft.git
+cd Uncertainty_ft
 ```
 
 2. Install dependencies:
